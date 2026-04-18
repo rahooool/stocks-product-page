@@ -196,7 +196,7 @@ const QUARTERLY_DATA: BarDataItem[] = [
   { label: "Jun '25", revenue: 4600,  profit: 680,  active: false },
   { label: "Sep '25", revenue: 6100,  profit: 2300, active: false },
   { label: "Dec '25", revenue: 7200,  profit: 2800, active: false },
-  { label: "Mar '26", revenue: 10500, profit: 5500, active: true, revenueChangePct: '-5.90%', profitChangePct: '+5.90%' },
+  { label: "Mar '26", revenue: 10500, profit: 5500, active: true },
 ];
 
 const YEARLY_DATA: BarDataItem[] = [
@@ -204,8 +204,15 @@ const YEARLY_DATA: BarDataItem[] = [
   { label: "2023", revenue: 4700,  profit: -6400, active: false },
   { label: "2024", revenue: 8500,  profit: -4200, active: false },
   { label: "2025", revenue: 10500, profit: -500,  active: false },
-  { label: "2026", revenue: 15500, profit: 5500,  active: true, revenueChangePct: '+47.6%', profitChangePct: '+N/A' },
+  { label: "2026", revenue: 15500, profit: 5500,  active: true },
 ];
+
+function calcGrowthPct(curr: number, prev: number): string | null {
+  if (prev === 0) return null;
+  const pct = ((curr - prev) / Math.abs(prev)) * 100;
+  const sign = pct >= 0 ? '+' : '';
+  return `${sign}${pct.toFixed(1)}%`;
+}
 
 // ─── GR-1 Insights data ──────────────────────────────────────────────────────
 const gr1Insights = [
@@ -674,24 +681,51 @@ function SectionHeader({
 
 const FIN_CHART_H = 182;
 
-function FinancialBarChart({ data, mode, activeIndex, onBarPress }: {
+function FinancialBarChart({ data, mode, activeIndex, onBarPress, filterMode }: {
   data: BarDataItem[];
   mode: 'quarterly' | 'yearly';
   activeIndex: number;
   onBarPress: (i: number) => void;
+  filterMode: 'both' | 'revenue' | 'profit';
 }) {
   const isYearly = mode === 'yearly';
-  const maxPos   = isYearly ? 16000 : 15000;
-  const minNeg   = isYearly ? 16000 : 0;
-  const total    = maxPos + minNeg;
+
+  // Derive scale from data — "nice numbers" algorithm ──────────────────────
+  // Only include the visible metric(s) in the scale calculation
+  const allValues = data.flatMap(d =>
+    filterMode === 'revenue' ? [d.revenue] :
+    filterMode === 'profit'  ? [d.profit]  :
+    [d.revenue, d.profit]
+  );
+  const dataMax   = Math.max(...allValues);
+  const dataMin   = Math.min(...allValues);
+
+  // Snap a raw step to the nearest 1×, 2×, or 5× power of 10.
+  // This guarantees round tick labels and — critically — that 0 is always
+  // a tick boundary when the range crosses zero (floor/ceil to the step).
+  const TARGET_TICKS = 5;
+  const rawStep = (dataMax - dataMin) / (TARGET_TICKS - 1);
+  const mag     = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const f       = rawStep / mag;
+  const niceStep = f < 1.5 ? mag : f < 3 ? 2 * mag : f < 7 ? 5 * mag : 10 * mag;
+
+  const tickMin = Math.floor(dataMin / niceStep) * niceStep;
+  const tickMax = Math.ceil(dataMax  / niceStep) * niceStep;
+
+  const yTicks: number[] = [];
+  for (let t = tickMax; t >= tickMin - 1e-9; t -= niceStep) {
+    yTicks.push(Math.round(t));
+  }
+
+  const maxPos = tickMax;
+  const minNeg = Math.abs(Math.min(0, tickMin)); // 0 when all values positive
+  const total  = maxPos + minNeg;
+  // ─────────────────────────────────────────────────────────────────────────
+
   // px from top of chart area where the zero line sits
   const zeroPxFromTop  = (maxPos / total) * FIN_CHART_H;
   // px from bottom of chart area where zero is
   const zeroPxFromBot  = FIN_CHART_H - zeroPxFromTop;
-
-  const yTicks = isYearly
-    ? [16000, 7500, 0, -7500, -16000]
-    : [15000, 10000, 5000, 1000, 0];
 
   const tickY = (v: number) => ((maxPos - v) / total) * FIN_CHART_H;
 
@@ -708,21 +742,21 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress }: {
         {/* Bars area */}
         <View style={[styles.barsAreaWrap, { height: FIN_CHART_H }]}>
           {/* Grid lines at tick positions */}
-          {yTicks.map((tick) => (
-            <View
-              key={tick}
-              style={[
-                styles.chartGridLine,
-                {
-                  top: tickY(tick),
-                  backgroundColor:
-                    tick === 0 && isYearly
-                      ? colors.contentDisabled
-                      : colors.borderPrimary,
-                },
-              ]}
-            />
-          ))}
+          {yTicks.map((tick) => {
+            const isZero = tick === 0;
+            return (
+              <View
+                key={tick}
+                style={[
+                  styles.chartGridLine,
+                  { top: tickY(tick) },
+                  isZero
+                    ? { height: StyleSheet.hairlineWidth, backgroundColor: colors.borderPrimary }
+                    : { height: 0, borderBottomWidth: 1, borderStyle: 'dashed', borderBottomColor: colors.borderPrimary },
+                ]}
+              />
+            );
+          })}
 
           {/* Bars row */}
           <View style={styles.barsArea}>
@@ -733,53 +767,63 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress }: {
               const profH     = (Math.abs(d.profit) / total) * FIN_CHART_H;
               const isNeg     = d.profit < 0;
               const profColor = isNeg ? colors.dataVizRed : colors.dataVizMintGreen;
+              const showRev   = filterMode === 'both' || filterMode === 'revenue';
+              const showProf  = filterMode === 'both' || filterMode === 'profit';
 
               return (
                 <TouchableOpacity
                   key={i}
-                  style={styles.barGroup}
+                  style={[
+                    styles.barGroup,
+                    // Single bar mode: center a 16px bar in the 34px group
+                    filterMode !== 'both' && { justifyContent: 'center' },
+                  ]}
                   onPress={() => onBarPress(i)}
                   activeOpacity={1}
                 >
                   {/* Revenue bar — 16px wide */}
-                  <View style={{ width: 16, height: '100%', position: 'relative' }}>
-                    <View style={{
-                      position: 'absolute',
-                      left: 0, right: 0,
-                      bottom: zeroPxFromBot,
-                      height: revH,
-                      backgroundColor: colors.dataVizGrey,
-                      opacity,
-                      borderTopLeftRadius: 2,
-                      borderTopRightRadius: 2,
-                    }} />
-                  </View>
-                  {/* Profit bar — 16px wide */}
-                  <View style={{ width: 16, height: '100%', position: 'relative' }}>
-                    {isNeg ? (
-                      <View style={{
-                        position: 'absolute',
-                        left: 0, right: 0,
-                        top: zeroPxFromTop,
-                        height: profH,
-                        backgroundColor: profColor,
-                        opacity,
-                        borderBottomLeftRadius: 2,
-                        borderBottomRightRadius: 2,
-                      }} />
-                    ) : (
+                  {showRev && (
+                    <View style={{ width: 16, height: '100%', position: 'relative' }}>
                       <View style={{
                         position: 'absolute',
                         left: 0, right: 0,
                         bottom: zeroPxFromBot,
-                        height: profH,
-                        backgroundColor: profColor,
+                        height: revH,
+                        backgroundColor: colors.dataVizGrey,
                         opacity,
                         borderTopLeftRadius: 2,
                         borderTopRightRadius: 2,
                       }} />
-                    )}
-                  </View>
+                    </View>
+                  )}
+                  {/* Profit bar — 16px wide */}
+                  {showProf && (
+                    <View style={{ width: 16, height: '100%', position: 'relative' }}>
+                      {isNeg ? (
+                        <View style={{
+                          position: 'absolute',
+                          left: 0, right: 0,
+                          top: zeroPxFromTop,
+                          height: profH,
+                          backgroundColor: profColor,
+                          opacity,
+                          borderBottomLeftRadius: 2,
+                          borderBottomRightRadius: 2,
+                        }} />
+                      ) : (
+                        <View style={{
+                          position: 'absolute',
+                          left: 0, right: 0,
+                          bottom: zeroPxFromBot,
+                          height: profH,
+                          backgroundColor: profColor,
+                          opacity,
+                          borderTopLeftRadius: 2,
+                          borderTopRightRadius: 2,
+                        }} />
+                      )}
+                    </View>
+                  )}
                 </TouchableOpacity>
               );
             })}
@@ -811,49 +855,79 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress }: {
   );
 }
 
-function ChartLegendCard({ data, activeIndex }: { data: BarDataItem[]; activeIndex: number }) {
+function ChartLegendCard({ data, activeIndex, filterMode, onFilterChange }: {
+  data: BarDataItem[];
+  activeIndex: number;
+  filterMode: 'both' | 'revenue' | 'profit';
+  onFilterChange: (f: 'both' | 'revenue' | 'profit') => void;
+}) {
   const active = data[activeIndex] ?? data[data.length - 1];
+  const prev   = activeIndex > 0 ? data[activeIndex - 1] : null;
   const fmtVal = (v: number) => {
     const abs = Math.abs(v);
     const s = abs.toLocaleString('en-IN');
     return `₹${s}`;
   };
+  const revGrowth    = prev ? calcGrowthPct(active.revenue, prev.revenue) : null;
+  const profitGrowth = prev ? calcGrowthPct(active.profit,  prev.profit)  : null;
   const profitPositive = active.profit >= 0;
   const profitChangeColor = profitPositive ? colors.contentPositive : colors.contentNegative;
+
+  const revActive  = filterMode === 'both' || filterMode === 'revenue';
+  const profActive = filterMode === 'both' || filterMode === 'profit';
+
+  const handleRevPress  = () => onFilterChange(filterMode === 'revenue' ? 'both' : 'revenue');
+  const handleProfPress = () => onFilterChange(filterMode === 'profit'  ? 'both' : 'profit');
 
   return (
     <View style={styles.legendCard}>
       <Text style={styles.legendDate}>{active.label.toUpperCase()}</Text>
       <View style={styles.legendRow}>
-        <View style={styles.legendItem}>
-          <View style={styles.legendRow}>
-            <View style={[styles.legendDot, { backgroundColor: colors.dataVizGrey }]} />
+        {/* Revenue legend item */}
+        <TouchableOpacity style={styles.legendItem} onPress={handleRevPress} activeOpacity={0.7}>
+          <View style={styles.legendLabelRow}>
+            {revActive
+              ? <View style={[styles.legendDot, { backgroundColor: colors.dataVizGrey }]} />
+              : <View style={[styles.legendDot, { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderPrimary }]} />
+            }
             <Text style={styles.legendMetricLabel}>REVENUE (CR)</Text>
           </View>
-          <View style={styles.legendRow}>
-            <Text style={styles.legendValue}>{fmtVal(active.revenue)}</Text>
-            {active.revenueChangePct ? (
-              <Text style={[styles.legendChange, { color: active.revenueChangePct.startsWith('-') ? colors.contentNegative : colors.contentPositive }]}>
-                {active.revenueChangePct}
-              </Text>
-            ) : null}
-          </View>
-        </View>
+          {revActive ? (
+            <View style={styles.legendRow}>
+              <Text style={styles.legendValue}>{fmtVal(active.revenue)}</Text>
+              {revGrowth ? (
+                <Text style={[styles.legendChange, { color: revGrowth.startsWith('-') ? colors.contentNegative : colors.contentPositive }]}>
+                  {revGrowth}
+                </Text>
+              ) : null}
+            </View>
+          ) : (
+            <Text style={[styles.legendValue, { color: colors.contentDisabled }]}>--</Text>
+          )}
+        </TouchableOpacity>
 
-        <View style={styles.legendItem}>
-          <View style={styles.legendRow}>
-            <View style={[styles.legendDot, { backgroundColor: colors.dataVizMintGreen }]} />
+        {/* Profit legend item */}
+        <TouchableOpacity style={styles.legendItem} onPress={handleProfPress} activeOpacity={0.7}>
+          <View style={styles.legendLabelRow}>
+            {profActive
+              ? <View style={[styles.legendDot, { backgroundColor: colors.dataVizMintGreen }]} />
+              : <View style={[styles.legendDot, { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderPrimary }]} />
+            }
             <Text style={styles.legendMetricLabel}>PROFIT (CR)</Text>
           </View>
-          <View style={styles.legendRow}>
-            <Text style={styles.legendValue}>{fmtVal(active.profit)}</Text>
-            {active.profitChangePct ? (
-              <Text style={[styles.legendChange, { color: profitChangeColor }]}>
-                {active.profitChangePct}
-              </Text>
-            ) : null}
-          </View>
-        </View>
+          {profActive ? (
+            <View style={styles.legendRow}>
+              <Text style={styles.legendValue}>{fmtVal(active.profit)}</Text>
+              {profitGrowth ? (
+                <Text style={[styles.legendChange, { color: profitChangeColor }]}>
+                  {profitGrowth}
+                </Text>
+              ) : null}
+            </View>
+          ) : (
+            <Text style={[styles.legendValue, { color: colors.contentDisabled }]}>--</Text>
+          )}
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -868,7 +942,7 @@ function GrowthTable() {
         <Text style={styles.growthHeaderMetric}>Profit</Text>
       </View>
 
-      <View style={styles.divider} />
+      <View style={styles.dashedDivider} />
 
       {/* Rows */}
       <View style={{ gap: 16 }}>
@@ -1385,6 +1459,7 @@ export default function StocksProductPage() {
   const [activePill, setActivePill] = useState(0);
   const [activeBarIndex, setActiveBarIndex] = useState(4); // last item selected by default
   const [financialExpanded, setFinancialExpanded] = useState(true);
+  const [filterMode, setFilterMode] = useState<'both' | 'revenue' | 'profit'>('both');
   const [liveMeta, setLiveMeta] = useState<ChartMeta | null>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
 
@@ -1426,7 +1501,7 @@ export default function StocksProductPage() {
         <PerformanceWidget meta={liveMeta} />
 
         {/* Financial Performance */}
-        <View style={[styles.section, { borderBottomWidth: 1, borderBottomColor: colors.borderPrimary }]}>
+        <View style={styles.section}>
           <SectionHeader
             title="Financial performance"
             expanded={financialExpanded}
@@ -1442,7 +1517,7 @@ export default function StocksProductPage() {
                     key={p}
                     label={p}
                     selected={i === activePill}
-                    onPress={() => { setActivePill(i); setActiveBarIndex(4); }}
+                    onPress={() => { setActivePill(i); setActiveBarIndex(4); setFilterMode('both'); }}
                   />
                 ))}
               </View>
@@ -1452,6 +1527,8 @@ export default function StocksProductPage() {
                 <ChartLegendCard
                   data={activePill === 0 ? QUARTERLY_DATA : YEARLY_DATA}
                   activeIndex={activeBarIndex}
+                  filterMode={filterMode}
+                  onFilterChange={setFilterMode}
                 />
                 <View style={styles.chartArea}>
                   <FinancialBarChart
@@ -1459,6 +1536,7 @@ export default function StocksProductPage() {
                     mode={activePill === 0 ? 'quarterly' : 'yearly'}
                     activeIndex={activeBarIndex}
                     onBarPress={setActiveBarIndex}
+                    filterMode={filterMode}
                   />
                 </View>
               </View>
@@ -1467,6 +1545,7 @@ export default function StocksProductPage() {
               <GrowthTable />
             </>
           )}
+          <View style={styles.divider} />
         </View>
 
         {/* About */}
@@ -1847,6 +1926,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     gap: 4,
   },
+  legendLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   legendItem: {
     flex: 1,
     gap: 4,
@@ -1884,7 +1968,6 @@ const styles = StyleSheet.create({
   barChartContainer: {
     flexDirection: 'row',
     paddingTop: 16,
-    paddingHorizontal: 16,
   },
   barsAreaWrap: {
     flex: 1,
@@ -1895,8 +1978,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.borderPrimary,
   },
   barsArea: {
     flex: 1,
@@ -1930,8 +2011,7 @@ const styles = StyleSheet.create({
   },
   xAxis: {
     flexDirection: 'row',
-    paddingRight: 52,
-    paddingLeft: 16,
+    paddingRight: 36,
     paddingBottom: 16,
     paddingTop: 4,
   },
@@ -1946,11 +2026,25 @@ const styles = StyleSheet.create({
   xAxisLabelActive: {
     color: colors.contentPrimary,
   },
+  xAxisGrowth: {
+    fontFamily: F.medium,
+    fontSize: 9,
+    textAlign: 'center',
+    opacity: 0.7,
+    lineHeight: 11,
+  },
 
   // Divider
   divider: {
     height: 1,
     backgroundColor: colors.borderPrimary,
+  },
+  dashedDivider: {
+    height: 0,
+    borderBottomWidth: 1,
+    borderStyle: 'dashed',
+    borderBottomColor: colors.borderPrimary,
+    marginHorizontal: 16,
   },
 
   // Growth table
