@@ -40,6 +40,7 @@ import {
   Flag02Icon,
   ShuffleIcon,
   Link04Icon,
+  ViewIcon,
 } from '@hugeicons/core-free-icons';
 
 const SCREEN_WIDTH  = Dimensions.get('window').width;
@@ -68,11 +69,18 @@ const colors = {
   borderPrimary: '#E6E9F8',  // gray150
   // border++/
   borderNeutral: '#35374B',  // gray900
-  // data-viz/
-  dataVizMintGreen: '#04B488',  // green500
-  dataVizLilac:     '#A6AFE5',  // purple450
-  dataVizGrey:      '#A0A5C8',  // gray500
-  dataVizRed:       '#F7A895',  // red450 — negative profit bars
+  // data-viz/background
+  dataVizMintGreen:  '#04B488',
+  dataVizGrey:       '#808FA3',
+  dataVizRed:        '#FF5E3B',
+  dataVizBlue:       '#5669FF',
+  dataVizYellow:     '#FCCE00',
+  dataVizOrange:     '#F59817',
+  dataVizMagenta:    '#C73A75',
+  dataVizBrown:      '#9D615C',
+  dataVizLilac:      '#7A7AC6',
+  dataVizSkyBlue:    '#4DA4DD',
+  dataVizOliveGreen: '#A1B55C',
 };
 
 const TIME_PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'All'];
@@ -192,19 +200,19 @@ interface BarDataItem {
 }
 
 const QUARTERLY_DATA: BarDataItem[] = [
-  { label: "Mar '25", revenue: 3200,  profit: 350,  active: false },
-  { label: "Jun '25", revenue: 4600,  profit: 680,  active: false },
-  { label: "Sep '25", revenue: 6100,  profit: 2300, active: false },
-  { label: "Dec '25", revenue: 7200,  profit: 2800, active: false },
-  { label: "Mar '26", revenue: 10500, profit: 5500, active: true },
+  { label: "Dec '24", revenue: 5600,  profit: 59,  active: false },
+  { label: "Mar '25", revenue: 6200,  profit: 39,  active: false },
+  { label: "Jun '25", revenue: 7500,  profit: 25,  active: false },
+  { label: "Sep '25", revenue: 13942, profit: 65,  active: false },
+  { label: "Dec '25", revenue: 16663, profit: 102, active: true },
 ];
 
 const YEARLY_DATA: BarDataItem[] = [
-  { label: "2022", revenue: 2200,  profit: -9800, active: false },
-  { label: "2023", revenue: 4700,  profit: -6400, active: false },
-  { label: "2024", revenue: 8500,  profit: -4200, active: false },
-  { label: "2025", revenue: 10500, profit: -500,  active: false },
-  { label: "2026", revenue: 15500, profit: 5500,  active: true },
+  { label: "2021", revenue: 2118,  profit: -861,  active: false },
+  { label: "2022", revenue: 4687,  profit: -1223, active: false },
+  { label: "2023", revenue: 7761,  profit: -971,  active: false },
+  { label: "2024", revenue: 12961, profit: 351,   active: false },
+  { label: "2025", revenue: 21320, profit: 527,   active: true },
 ];
 
 function calcGrowthPct(curr: number, prev: number): string | null {
@@ -690,44 +698,70 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress, filterMode }: 
 }) {
   const isYearly = mode === 'yearly';
 
-  // Derive scale from data — "nice numbers" algorithm ──────────────────────
-  // Only include the visible metric(s) in the scale calculation
   const allValues = data.flatMap(d =>
     filterMode === 'revenue' ? [d.revenue] :
     filterMode === 'profit'  ? [d.profit]  :
     [d.revenue, d.profit]
   );
-  const dataMax   = Math.max(...allValues);
-  const dataMin   = Math.min(...allValues);
+  const dataMax = Math.max(...allValues);
+  const dataMin = Math.min(...allValues);
 
-  // Snap a raw step to the nearest 1×, 2×, or 5× power of 10.
-  // This guarantees round tick labels and — critically — that 0 is always
-  // a tick boundary when the range crosses zero (floor/ceil to the step).
-  const TARGET_TICKS = 5;
-  const rawStep = (dataMax - dataMin) / (TARGET_TICKS - 1);
-  const mag     = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const f       = rawStep / mag;
-  const niceStep = f < 1.5 ? mag : f < 3 ? 2 * mag : f < 7 ? 5 * mag : 10 * mag;
+  // When both metrics are shown and all values are non-negative, revenue is
+  // orders of magnitude larger than profit. A linear scale makes profit bars
+  // invisible. Instead use a sqrt scale: ticks sit at equal pixel intervals
+  // but non-equal values (0, T/9, 4T/9, T), so the lower range gets more
+  // visual real estate — profit bars become readable without a dual axis.
+  const useSqrtScale = filterMode === 'both' && dataMin >= 0;
 
-  const tickMin = Math.floor(dataMin / niceStep) * niceStep;
-  const tickMax = Math.ceil(dataMax  / niceStep) * niceStep;
+  // Compute T3 (scale ceiling) so that T3/9 is a round chart label.
+  // Find the smallest k (rounded to a nice step) where (3k)² ≥ dataMax.
+  const sqrtCeiling = (v: number): number => {
+    const third = Math.sqrt(v) / 3;
+    const mag   = Math.pow(10, Math.floor(Math.log10(third)));
+    const f     = third / mag;
+    const step  = f < 1.5 ? mag : f < 3 ? 2 * mag : f < 7 ? 5 * mag : 10 * mag;
+    const k     = Math.ceil(third / step) * step;
+    return (3 * k) * (3 * k);
+  };
 
-  const yTicks: number[] = [];
-  for (let t = tickMax; t >= tickMin - 1e-9; t -= niceStep) {
-    yTicks.push(Math.round(t));
+  // Linear nice-numbers (used when values span negative or single-metric mode)
+  const linearScale = (min: number, max: number, ticks: number) => {
+    const rawStep  = (max - min) / (ticks - 1);
+    const mag      = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const f        = rawStep / mag;
+    const step     = f < 1.5 ? mag : f < 3 ? 2 * mag : f < 7 ? 5 * mag : 10 * mag;
+    const tMin     = min >= 0 ? 0 : Math.floor(min / step) * step;
+    const tMax     = Math.ceil(max / step) * step;
+    const tickArr: number[] = [];
+    for (let t = tMax; t >= tMin - 1e-9; t -= step) tickArr.push(Math.round(t));
+    return { tMin, tMax, tickArr };
+  };
+
+  let yTicks: number[];
+  let zeroPxFromTop: number;
+  let zeroPxFromBot: number;
+  let tickY:  (v: number) => number;
+  let barH:   (v: number) => number;
+
+  if (useSqrtScale) {
+    const T = sqrtCeiling(dataMax);
+    // Ticks: top→bottom = T, 4T/9, T/9, 0  (equal px gaps, non-equal values)
+    yTicks = [T, Math.round(T * 4 / 9), Math.round(T / 9), 0];
+    zeroPxFromTop = FIN_CHART_H; // zero line sits at the very bottom
+    zeroPxFromBot = 0;
+    tickY = (v: number) => (1 - Math.sqrt(v / T)) * FIN_CHART_H;
+    barH  = (v: number) => Math.sqrt(Math.abs(v) / T) * FIN_CHART_H;
+  } else {
+    const { tMin, tMax, tickArr } = linearScale(dataMin, dataMax, 8);
+    yTicks = tickArr;
+    const maxPos    = tMax;
+    const minNeg    = Math.abs(Math.min(0, tMin));
+    const total     = maxPos + minNeg;
+    zeroPxFromTop   = (maxPos / total) * FIN_CHART_H;
+    zeroPxFromBot   = FIN_CHART_H - zeroPxFromTop;
+    tickY = (v: number) => ((maxPos - v) / total) * FIN_CHART_H;
+    barH  = (v: number) => (Math.abs(v) / total) * FIN_CHART_H;
   }
-
-  const maxPos = tickMax;
-  const minNeg = Math.abs(Math.min(0, tickMin)); // 0 when all values positive
-  const total  = maxPos + minNeg;
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // px from top of chart area where the zero line sits
-  const zeroPxFromTop  = (maxPos / total) * FIN_CHART_H;
-  // px from bottom of chart area where zero is
-  const zeroPxFromBot  = FIN_CHART_H - zeroPxFromTop;
-
-  const tickY = (v: number) => ((maxPos - v) / total) * FIN_CHART_H;
 
   const formatK = (v: number) => {
     if (v === 0) return '0';
@@ -751,8 +785,8 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress, filterMode }: 
                   styles.chartGridLine,
                   { top: tickY(tick) },
                   isZero
-                    ? { height: StyleSheet.hairlineWidth, backgroundColor: colors.borderPrimary }
-                    : { height: 0, borderBottomWidth: 1, borderStyle: 'dashed', borderBottomColor: colors.borderPrimary },
+                    ? { height: 1, backgroundColor: colors.borderPrimary }
+                    : { height: 1, backgroundColor: colors.borderPrimary, opacity: 0.35 },
                 ]}
               />
             );
@@ -763,8 +797,8 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress, filterMode }: 
             {data.map((d, i) => {
               const isActive  = i === activeIndex;
               const opacity   = isActive ? 1 : 0.45;
-              const revH      = (d.revenue / total) * FIN_CHART_H;
-              const profH     = (Math.abs(d.profit) / total) * FIN_CHART_H;
+              const revH  = barH(d.revenue);
+              const profH = barH(d.profit);
               const isNeg     = d.profit < 0;
               const profColor = isNeg ? colors.dataVizRed : colors.dataVizMintGreen;
               const showRev   = filterMode === 'both' || filterMode === 'revenue';
@@ -855,6 +889,17 @@ function FinancialBarChart({ data, mode, activeIndex, onBarPress, filterMode }: 
   );
 }
 
+function HiddenEyeIcon() {
+  return (
+    <Svg width={12} height={12} viewBox="0 0 12 12" fill="none">
+      <Path
+        d="M0.948967 5.26694C1.21576 5.19567 1.4898 5.35418 1.56107 5.62096C1.56993 5.65415 1.58287 5.68664 1.60113 5.71937L1.60407 5.72463C2.05563 6.55732 2.66788 7.22331 3.44403 7.72962C4.20894 8.2278 5.05132 8.4765 5.9835 8.4765C6.9157 8.4765 7.75808 8.22779 8.52301 7.72961C9.29905 7.22385 9.91139 6.55791 10.3635 5.72456L10.3663 5.71936C10.3857 5.68475 10.3981 5.65313 10.4056 5.62406C10.4752 5.35682 10.7482 5.19657 11.0154 5.26612C11.2827 5.33568 11.4429 5.6087 11.3734 5.87594C11.3432 5.99183 11.2981 6.10127 11.2412 6.20386C11.0528 6.55077 10.8397 6.87425 10.602 7.17397L11.3575 8.1156C11.5303 8.33099 11.4958 8.64569 11.2804 8.81849C11.065 8.9913 10.7503 8.95679 10.5775 8.7414L9.91343 7.91368C9.65291 8.15234 9.37139 8.37033 9.069 8.5674C8.79712 8.74448 8.51636 8.89579 8.22727 9.02115L8.55611 10.0946C8.63699 10.3586 8.48852 10.6382 8.22449 10.7191C7.96046 10.8 7.68085 10.6515 7.59997 10.3875L7.277 9.33323C6.86055 9.42873 6.42913 9.4765 5.9835 9.4765C5.53806 9.4765 5.10682 9.42877 4.69054 9.33335L4.36761 10.3875C4.28672 10.6515 4.00711 10.8 3.74308 10.7191C3.47905 10.6382 3.33058 10.3586 3.41147 10.0946L3.74024 9.02137C3.45097 8.89596 3.17016 8.74466 2.89812 8.56747C2.59599 8.37039 2.31439 8.15227 2.05404 7.91376L1.39001 8.7414C1.2172 8.95679 0.902507 8.9913 0.68712 8.81849C0.471733 8.64569 0.437216 8.33099 0.610025 8.1156L1.36545 7.17404C1.12772 6.87424 0.914602 6.55072 0.726286 6.20377C0.668343 6.09938 0.624806 5.99084 0.594942 5.87904C0.523677 5.61225 0.682179 5.3382 0.948967 5.26694Z"
+        fill="#7F8283"
+      />
+    </Svg>
+  );
+}
+
 function ChartLegendCard({ data, activeIndex, filterMode, onFilterChange }: {
   data: BarDataItem[];
   activeIndex: number;
@@ -891,6 +936,10 @@ function ChartLegendCard({ data, activeIndex, filterMode, onFilterChange }: {
               : <View style={[styles.legendDot, { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderPrimary }]} />
             }
             <Text style={styles.legendMetricLabel}>REVENUE (CR)</Text>
+            {revActive
+              ? <HugeiconsIcon icon={ViewIcon} size={12} color={colors.contentSecondary} strokeWidth={1.5} />
+              : <HiddenEyeIcon />
+            }
           </View>
           {revActive ? (
             <View style={styles.legendRow}>
@@ -910,10 +959,14 @@ function ChartLegendCard({ data, activeIndex, filterMode, onFilterChange }: {
         <TouchableOpacity style={styles.legendItem} onPress={handleProfPress} activeOpacity={0.7}>
           <View style={styles.legendLabelRow}>
             {profActive
-              ? <View style={[styles.legendDot, { backgroundColor: colors.dataVizMintGreen }]} />
+              ? <View style={[styles.legendDot, { backgroundColor: profitPositive ? colors.dataVizMintGreen : colors.dataVizRed }]} />
               : <View style={[styles.legendDot, { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderPrimary }]} />
             }
             <Text style={styles.legendMetricLabel}>PROFIT (CR)</Text>
+            {profActive
+              ? <HugeiconsIcon icon={ViewIcon} size={12} color={colors.contentSecondary} strokeWidth={1.5} />
+              : <HiddenEyeIcon />
+            }
           </View>
           {profActive ? (
             <View style={styles.legendRow}>
@@ -2011,12 +2064,13 @@ const styles = StyleSheet.create({
   },
   xAxis: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     paddingRight: 36,
     paddingBottom: 16,
     paddingTop: 4,
   },
   xAxisLabel: {
-    flex: 1,
+    width: 34,
     fontFamily: F.medium,
     fontSize: 10,
     color: colors.contentDisabled,
