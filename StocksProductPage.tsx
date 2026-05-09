@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { StockConfig, STOCK_CONFIGS } from './stocks';
 import {
   View,
   Text,
@@ -12,6 +13,7 @@ import {
   Dimensions,
   Animated,
   Easing,
+  PanResponder,
 } from 'react-native';
 import Svg, {
   Path,
@@ -22,6 +24,7 @@ import Svg, {
   Circle,
   Line as SvgLine,
 } from 'react-native-svg';
+import { GR1Icon, useGR1Sheet, GR1Layer } from './GR1Sheet';
 import { HugeiconsIcon } from '@hugeicons/react-native';
 import {
   ArrowLeft01Icon,
@@ -46,48 +49,13 @@ import {
 const SCREEN_WIDTH  = Dimensions.get('window').width;
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
-// ─── Color tokens — Mint Core Foundations (light mode) ───────────────────────
-// Source: mint-core-foundations-design-system-rules.md
-// Never use raw hex directly — all values here are resolved semantic tokens.
-const colors = {
-  // content/
-  contentPrimary:   '#35374B',  // gray900
-  contentSecondary: '#44475B',  // gray700
-  contentTertiary:  '#A0A5C8',  // gray500
-  // content++/
-  contentDisabled:  '#B9BDDB',  // gray400
-  contentPositive:  '#04B488',  // green500
-  contentNegative:  '#ED5533',  // red500
-  // background/
-  backgroundPrimary:   '#FFFFFF',  // white
-  backgroundSecondary: '#F7F8FC',  // gray50
-  backgroundTertiary:  '#EFF1FC',  // gray100
-  // background++/
-  backgroundAccent:   '#04B488',  // green500
-  backgroundNegative: '#ED5533',  // red500
-  // border/
-  borderPrimary: '#E6E9F8',  // gray150
-  // border++/
-  borderNeutral: '#35374B',  // gray900
-  // data-viz/background
-  dataVizMintGreen:  '#04B488',
-  dataVizGrey:       '#808FA3',
-  dataVizRed:        '#FF5E3B',
-  dataVizBlue:       '#5669FF',
-  dataVizYellow:     '#FCCE00',
-  dataVizOrange:     '#F59817',
-  dataVizMagenta:    '#C73A75',
-  dataVizBrown:      '#9D615C',
-  dataVizLilac:      '#7A7AC6',
-  dataVizSkyBlue:    '#4DA4DD',
-  dataVizOliveGreen: '#A1B55C',
-};
+// ─── Design tokens ───────────────────────────────────────────────────────────
+// Source of truth: ./tokens.ts (mirrors docs/mint-ds-groww-invest-v0.18.md).
+import { colors, fonts as F, useTheme } from './tokens';
 
 const TIME_PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'All'];
 
 // ─── Live chart config ────────────────────────────────────────────────────────
-const SYMBOL = 'GROWW.NS';
-
 const PERIOD_CFG: Record<string, { interval: string; range: string; refreshSecs: number }> = {
   '1D':  { interval: '5m',  range: '1d',  refreshSecs: 30   },
   '1W':  { interval: '60m', range: '5d',  refreshSecs: 300  },
@@ -118,15 +86,16 @@ const YF_BASE = Platform.OS === 'web'
   ? 'http://localhost:8082'
   : 'https://query1.finance.yahoo.com';
 
-function buildYFUrl(interval: string, range: string): string {
-  return `${YF_BASE}/v8/finance/chart/${SYMBOL}?interval=${interval}&range=${range}&includePrePost=false`;
+function buildYFUrl(symbol: string, interval: string, range: string): string {
+  return `${YF_BASE}/v8/finance/chart/${symbol}?interval=${interval}&range=${range}&includePrePost=false`;
 }
 
 async function fetchChart(
+  symbol: string,
   period: string,
-): Promise<{ prices: number[]; meta: ChartMeta }> {
+): Promise<{ prices: number[]; timestamps: number[]; meta: ChartMeta }> {
   const { interval, range } = PERIOD_CFG[period];
-  const res = await fetch(buildYFUrl(interval, range), {
+  const res = await fetch(buildYFUrl(symbol, interval, range), {
     headers: { Accept: 'application/json' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -134,12 +103,22 @@ async function fetchChart(
   const result = json.chart.result[0];
   const m = result.meta;
   const closes: (number | null)[] = result.indicators.quote[0].close;
-  const prices = closes.filter((v): v is number => v != null && isFinite(v));
+  const ts: number[] = result.timestamp ?? [];
+  const prices: number[] = [];
+  const timestamps: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    const v = closes[i];
+    if (v != null && isFinite(v)) {
+      prices.push(v);
+      timestamps.push(ts[i]);
+    }
+  }
   if (prices.length === 0) throw new Error('No data');
   const price = m.regularMarketPrice as number;
   const prevClose = (m.chartPreviousClose ?? m.previousClose) as number;
   return {
     prices,
+    timestamps,
     meta: {
       price,
       prevClose,
@@ -190,30 +169,8 @@ function areaPath(pts: { x: number; y: number }[], h: number): string {
 }
 
 // ─── Financial chart data ─────────────────────────────────────────────────────
-interface BarDataItem {
-  label: string;
-  revenue: number;
-  profit: number;
-  active: boolean;
-  revenueChangePct?: string;
-  profitChangePct?: string;
-}
-
-const QUARTERLY_DATA: BarDataItem[] = [
-  { label: "Dec '24", revenue: 5600,  profit: 59,  active: false },
-  { label: "Mar '25", revenue: 6200,  profit: 39,  active: false },
-  { label: "Jun '25", revenue: 7500,  profit: 25,  active: false },
-  { label: "Sep '25", revenue: 13942, profit: 65,  active: false },
-  { label: "Dec '25", revenue: 16663, profit: 102, active: true },
-];
-
-const YEARLY_DATA: BarDataItem[] = [
-  { label: "2021", revenue: 2118,  profit: -861,  active: false },
-  { label: "2022", revenue: 4687,  profit: -1223, active: false },
-  { label: "2023", revenue: 7761,  profit: -971,  active: false },
-  { label: "2024", revenue: 12961, profit: 351,   active: false },
-  { label: "2025", revenue: 21320, profit: 527,   active: true },
-];
+// BarDataItem is imported from stocks.ts via StockConfig
+type BarDataItem = StockConfig['quarterlyData'][0];
 
 function calcGrowthPct(curr: number, prev: number): string | null {
   if (prev === 0) return null;
@@ -222,40 +179,8 @@ function calcGrowthPct(curr: number, prev: number): string | null {
   return `${sign}${pct.toFixed(1)}%`;
 }
 
-// ─── GR-1 Insights data ──────────────────────────────────────────────────────
-const gr1Insights = [
-  'Sharp -17% drop due to war-related news',
-  'AI Revenue surge accelerating deal pipeline',
-  '200% higher volumes this week',
-];
 
-// ─── Growth table data ────────────────────────────────────────────────────────
-const growthData = [
-  { label: '1Y', labelSuffix: ' (TTM)', revenue: '+56%', profit: '-12%', profitPositive: false },
-  { label: '3Y CAGR', labelSuffix: '', revenue: '+4%', profit: '-4%', profitPositive: false },
-  { label: '5Y CAGR', labelSuffix: '', revenue: '+4%', profit: '+3%', profitPositive: true },
-  { label: '10Y CAGR', labelSuffix: '', revenue: '+4%', profit: '+3%', profitPositive: true },
-];
-
-// ─── Market Depth static data ─────────────────────────────────────────────────
-const MD_BUY_PCT  = 46.65;
-const MD_SELL_PCT = 53.35;
-const MD_BIDS = [
-  { price: 1783.95, qty: 2000  },
-  { price: 1783.90, qty: 2356  },
-  { price: 1783.85, qty: 198   },
-  { price: 1783.80, qty: 100   },
-  { price: 1783.75, qty: 51    },
-];
-const MD_ASKS = [
-  { price: 1784.00, qty: 1996  },
-  { price: 1784.05, qty: 1     },
-  { price: 1784.10, qty: 248   },
-  { price: 1784.15, qty: 240   },
-  { price: 1784.20, qty: 1676  },
-];
-const MD_BID_TOTAL = 27248583;
-const MD_ASK_TOTAL = 27248583;
+// ─── Market Depth — values injected per stock via props ───────────────────────
 
 // ─── FadeInText ───────────────────────────────────────────────────────────────
 // Fades + slides each insight in via the native animation driver (60 fps).
@@ -302,16 +227,35 @@ function FadeInText({
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
+function formatScrubDate(epochSecs: number, period: string): string {
+  const d = new Date(epochSecs * 1000);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const intraday = period === '1D' || period === '1W';
+  if (intraday) {
+    let h = d.getHours();
+    const mins = d.getMinutes().toString().padStart(2, '0');
+    const ampm = h >= 12 ? 'pm' : 'am';
+    h = h % 12 || 12;
+    return `${d.getDate()} ${months[d.getMonth()]} • ${h}:${mins} ${ampm}`;
+  }
+  const yr = d.getFullYear().toString().slice(-2);
+  return `${d.getDate()} ${months[d.getMonth()]} ‘${yr}`;
+}
+
 function LivePriceChart({
   prices,
+  timestamps,
   prevClose,
   width,
   height,
+  period,
 }: {
   prices: number[];
+  timestamps: number[];
   prevClose: number;
   width: number;
   height: number;
+  period: string;
 }) {
   const pad = 12;
   const pts = toSvgPoints(prices, width, height, pad);
@@ -325,47 +269,140 @@ function LivePriceChart({
   const lastPt = pts[pts.length - 1];
   const isPositive = prices[prices.length - 1] >= prevClose;
   const lineColor = isPositive ? colors.contentPositive : colors.contentNegative;
-  const gradId = isPositive ? 'gradGreen' : 'gradRed';
-  const gradColorTop = isPositive ? '#04b488' : '#ed5533';
+
+  // Scrub state — index of the point under the finger (null = not scrubbing)
+  const [scrubIdx, setScrubIdx] = React.useState<number | null>(null);
+
+  const handleScrub = (clientX: number, layoutX: number) => {
+    const x = clientX - layoutX;
+    const ratio = x / width;
+    const i = Math.round(ratio * (prices.length - 1));
+    const clamped = Math.max(0, Math.min(prices.length - 1, i));
+    setScrubIdx(clamped);
+  };
+
+  // Web: pointer events. Native: PanResponder.
+  const wrapRef = useRef<any>(null);
+  const onPointerMove = (e: any) => {
+    if (Platform.OS !== 'web') return;
+    const rect = wrapRef.current?.getBoundingClientRect?.();
+    if (!rect) return;
+    handleScrub(e.clientX, rect.left);
+  };
+  const onPointerDown = (e: any) => {
+    if (Platform.OS !== 'web') return;
+    e.currentTarget?.setPointerCapture?.(e.pointerId);
+    onPointerMove(e);
+  };
+  const onPointerUp = () => setScrubIdx(null);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => Platform.OS !== 'web',
+      onMoveShouldSetPanResponder:  () => Platform.OS !== 'web',
+      onPanResponderGrant: (e) => {
+        const { locationX } = e.nativeEvent;
+        const i = Math.round((locationX / width) * (prices.length - 1));
+        setScrubIdx(Math.max(0, Math.min(prices.length - 1, i)));
+      },
+      onPanResponderMove: (e) => {
+        const { locationX } = e.nativeEvent;
+        const i = Math.round((locationX / width) * (prices.length - 1));
+        setScrubIdx(Math.max(0, Math.min(prices.length - 1, i)));
+      },
+      onPanResponderRelease: () => setScrubIdx(null),
+      onPanResponderTerminate: () => setScrubIdx(null),
+    })
+  ).current;
+
+  // Tooltip math (when scrubbing)
+  let tooltip: React.ReactNode = null;
+  let scrubMarker: React.ReactNode = null;
+  if (scrubIdx != null && pts[scrubIdx]) {
+    const p   = pts[scrubIdx];
+    const v   = prices[scrubIdx];
+    const ts  = timestamps[scrubIdx];
+    const pct = ((v - prevClose) / prevClose) * 100;
+    const pctSign = pct >= 0 ? '+' : '';
+    const valStr = `${v.toFixed(2)} (${pctSign}${pct.toFixed(2)}%)`;
+    const dateStr = ts ? formatScrubDate(ts, period) : '';
+
+    // Tooltip dimensions — tooltip hugs content; we just clamp position to the chart bounds.
+    const tooltipMaxW = 200;
+    const tooltipApproxH = 44;
+    let tipX = p.x + 8;
+    if (tipX + tooltipMaxW > width - 4) tipX = Math.max(4, p.x - tooltipMaxW - 8);
+    const tipY = Math.max(4, Math.min(p.y - tooltipApproxH - 8, height - tooltipApproxH - 4));
+
+    scrubMarker = (
+      <>
+        <SvgLine x1={p.x} y1={0} x2={p.x} y2={height} stroke={colors.borderPrimary} strokeWidth={1} strokeDasharray="3 3" />
+        <Circle cx={p.x} cy={p.y} r={7} fill={lineColor} opacity={0.2} />
+        <Circle cx={p.x} cy={p.y} r={4} fill={lineColor} />
+      </>
+    );
+
+    tooltip = (
+      <View
+        pointerEvents="none"
+        style={[styles.scrubTooltip, { left: tipX, top: tipY }]}
+      >
+        <Text style={styles.scrubTooltipValue} numberOfLines={1}>{valStr}</Text>
+        <Text style={styles.scrubTooltipDate} numberOfLines={1}>{dateStr}</Text>
+      </View>
+    );
+  }
+
+  const webHandlers = Platform.OS === 'web' ? {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel: onPointerUp,
+    onPointerLeave: onPointerUp,
+  } : {};
 
   return (
-    <Svg width={width} height={height}>
-      <Defs>
-        <SvgLinearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <Stop offset="0" stopColor={gradColorTop} stopOpacity={0.18} />
-          <Stop offset="1" stopColor={gradColorTop} stopOpacity={0} />
-        </SvgLinearGradient>
-      </Defs>
+    <View
+      ref={wrapRef}
+      style={{ width, height }}
+      {...panResponder.panHandlers}
+      {...webHandlers}
+    >
+      <Svg width={width} height={height}>
+        {/* Reference line (prev close) */}
+        <SvgLine
+          x1={0}
+          y1={refY}
+          x2={width}
+          y2={refY}
+          stroke={colors.borderPrimary}
+          strokeWidth={1}
+          strokeDasharray="4 4"
+        />
 
-      {/* Gradient fill area */}
-      <Path d={areaPath(pts, height)} fill={`url(#${gradId})`} />
+        {/* Price line */}
+        <Path
+          d={smoothLinePath(pts)}
+          fill="none"
+          stroke={lineColor}
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
 
-      {/* Reference line (prev close) */}
-      <SvgLine
-        x1={0}
-        y1={refY}
-        x2={width}
-        y2={refY}
-        stroke={colors.borderPrimary}
-        strokeWidth={1}
-        strokeDasharray="4 4"
-      />
+        {scrubIdx == null && (
+          <>
+            {/* Current price dot — outer ring */}
+            <Circle cx={lastPt.x} cy={lastPt.y} r={7} fill={lineColor} opacity={0.2} />
+            {/* Inner dot */}
+            <Circle cx={lastPt.x} cy={lastPt.y} r={4} fill={lineColor} />
+          </>
+        )}
 
-      {/* Price line */}
-      <Path
-        d={smoothLinePath(pts)}
-        fill="none"
-        stroke={lineColor}
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-
-      {/* Current price dot — outer ring */}
-      <Circle cx={lastPt.x} cy={lastPt.y} r={7} fill={lineColor} opacity={0.2} />
-      {/* Inner dot */}
-      <Circle cx={lastPt.x} cy={lastPt.y} r={4} fill={lineColor} />
-    </Svg>
+        {scrubMarker}
+      </Svg>
+      {tooltip}
+    </View>
   );
 }
 
@@ -395,12 +432,15 @@ function ChartError({ width, height, onRetry }: { width: number; height: number;
 }
 
 function StockHeroSection({
+  stock,
   onMetaUpdate,
 }: {
+  stock: StockConfig;
   onMetaUpdate?: (meta: ChartMeta) => void;
 }) {
   const [activePeriod, setActivePeriod] = useState('1D');
   const [prices, setPrices] = useState<number[]>([]);
+  const [timestamps, setTimestamps] = useState<number[]>([]);
   const [meta, setMeta] = useState<ChartMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -412,8 +452,9 @@ function StockHeroSection({
       if (!silent) setLoading(true);
       setError(null);
       try {
-        const result = await fetchChart(period);
+        const result = await fetchChart(stock.symbol, period);
         setPrices(result.prices);
+        setTimestamps(result.timestamps);
         setMeta(result.meta);
         onMetaUpdate?.(result.meta);
       } catch (e: any) {
@@ -422,7 +463,7 @@ function StockHeroSection({
         setLoading(false);
       }
     },
-    [onMetaUpdate],
+    [stock.symbol, onMetaUpdate],
   );
 
   // Fetch whenever period changes; set up auto-refresh for live periods
@@ -447,9 +488,8 @@ function StockHeroSection({
     ? `${changeSign}${meta.change.toFixed(2)} (${changeSign}${meta.changePct.toFixed(2)}%)`
     : '—';
 
-  // Holdings P&L (static for now)
-  const avgPrice = 1620.5;
-  const shares = 10;
+  const avgPrice = stock.avgPrice;
+  const shares = stock.shares;
   const holdingsValue = meta ? meta.price * shares : 0;
   const holdingsCost = avgPrice * shares;
   const holdingsGain = holdingsValue - holdingsCost;
@@ -459,19 +499,19 @@ function StockHeroSection({
     <View style={styles.heroSection}>
       {/* Stock info block */}
       <View style={styles.heroStockInfo}>
-        {/* Company logo */}
-        <Image source={require('./assets/mds-groww-logo.png')} style={styles.companyLogo} />
+        {/* Company logo (32×32, slightly rounded square) */}
+        <Image source={{ uri: stock.logoUri }} style={styles.companyLogo} />
 
-        {/* Ticker · Exchange */}
-        <View style={styles.heroTickerRow}>
-          <Text style={styles.heroTickerText}>GROWW</Text>
-          <Text style={styles.heroTickerDot}>•</Text>
-          <Text style={styles.heroTickerText}>NSE</Text>
-          <HugeiconsIcon icon={ArrowUpDownIcon} size={12} color={colors.contentSecondary} strokeWidth={1.5} />
+        {/* Ticker · Exchange + name (grouped per Figma 6248:38771) */}
+        <View style={styles.heroNameBlock}>
+          <View style={styles.heroTickerRow}>
+            <Text style={styles.heroTickerText}>{stock.ticker}</Text>
+            <Text style={styles.heroTickerDot}>•</Text>
+            <Text style={styles.heroTickerText}>{stock.exchange}</Text>
+            <HugeiconsIcon icon={ArrowUpDownIcon} size={12} color={colors.contentSecondary} strokeWidth={1.5} />
+          </View>
+          <Text style={styles.heroStockName}>{stock.name}</Text>
         </View>
-
-        {/* Stock name */}
-        <Text style={styles.heroStockName}>Groww (Billionbrains Garage Ventures)</Text>
 
         {/* Price + outline button */}
         <View style={styles.heroPriceRow}>
@@ -497,9 +537,11 @@ function StockHeroSection({
         ) : prices.length > 1 ? (
           <LivePriceChart
             prices={prices}
+            timestamps={timestamps}
             prevClose={meta!.prevClose}
             width={chartWidth}
             height={340}
+            period={activePeriod}
           />
         ) : null}
         <TouchableOpacity style={styles.heroExpandBtn} activeOpacity={0.7}>
@@ -531,7 +573,10 @@ function StockHeroSection({
         <View style={styles.heroHoldingsCard}>
           <View style={styles.heroHoldingsRow}>
             <View style={{ gap: 2 }}>
-              <Text style={styles.heroHoldingsShares}>{shares} shares</Text>
+              <View style={styles.heroHoldingsSharesRow}>
+                <Text style={styles.heroHoldingsShares}>{shares} shares</Text>
+                <HugeiconsIcon icon={ArrowRight01Icon} size={16} color={colors.contentPrimary} strokeWidth={1.5} />
+              </View>
               <Text style={styles.heroHoldingsAvg}>
                 Avg price ₹{avgPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </Text>
@@ -554,12 +599,16 @@ function StockHeroSection({
 
 function TopAppBar({
   onBack,
+  shortName,
   meta,
   scrollY,
+  onGR1Press,
 }: {
   onBack?: () => void;
+  shortName?: string;
   meta?: ChartMeta | null;
   scrollY: Animated.Value;
+  onGR1Press?: () => void;
 }) {
   const fmtPrice = meta
     ? `₹${meta.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -589,13 +638,13 @@ function TopAppBar({
 
       <Animated.View style={[styles.appBarContent, { opacity: contentOpacity }]}>
         <Text style={styles.appBarTitle} numberOfLines={1}>
-          Groww
+          {shortName ?? ''}
         </Text>
         {meta && (
           <View style={styles.appBarSubtitleRow}>
-            <Text style={styles.appBarPrice}>{fmtPrice}</Text>
-            <Text style={[styles.appBarChange, { color: isPos ? colors.contentPositive : colors.contentNegative }]}>
-              {' '}{fmtChange}
+            <Text style={styles.appBarPrice} numberOfLines={1}>{fmtPrice}</Text>
+            <Text style={[styles.appBarChange, { color: isPos ? colors.contentPositive : colors.contentNegative }]} numberOfLines={1}>
+              {fmtChange}
             </Text>
           </View>
         )}
@@ -894,7 +943,7 @@ function HiddenEyeIcon() {
     <Svg width={12} height={12} viewBox="0 0 12 12" fill="none">
       <Path
         d="M0.948967 5.26694C1.21576 5.19567 1.4898 5.35418 1.56107 5.62096C1.56993 5.65415 1.58287 5.68664 1.60113 5.71937L1.60407 5.72463C2.05563 6.55732 2.66788 7.22331 3.44403 7.72962C4.20894 8.2278 5.05132 8.4765 5.9835 8.4765C6.9157 8.4765 7.75808 8.22779 8.52301 7.72961C9.29905 7.22385 9.91139 6.55791 10.3635 5.72456L10.3663 5.71936C10.3857 5.68475 10.3981 5.65313 10.4056 5.62406C10.4752 5.35682 10.7482 5.19657 11.0154 5.26612C11.2827 5.33568 11.4429 5.6087 11.3734 5.87594C11.3432 5.99183 11.2981 6.10127 11.2412 6.20386C11.0528 6.55077 10.8397 6.87425 10.602 7.17397L11.3575 8.1156C11.5303 8.33099 11.4958 8.64569 11.2804 8.81849C11.065 8.9913 10.7503 8.95679 10.5775 8.7414L9.91343 7.91368C9.65291 8.15234 9.37139 8.37033 9.069 8.5674C8.79712 8.74448 8.51636 8.89579 8.22727 9.02115L8.55611 10.0946C8.63699 10.3586 8.48852 10.6382 8.22449 10.7191C7.96046 10.8 7.68085 10.6515 7.59997 10.3875L7.277 9.33323C6.86055 9.42873 6.42913 9.4765 5.9835 9.4765C5.53806 9.4765 5.10682 9.42877 4.69054 9.33335L4.36761 10.3875C4.28672 10.6515 4.00711 10.8 3.74308 10.7191C3.47905 10.6382 3.33058 10.3586 3.41147 10.0946L3.74024 9.02137C3.45097 8.89596 3.17016 8.74466 2.89812 8.56747C2.59599 8.37039 2.31439 8.15227 2.05404 7.91376L1.39001 8.7414C1.2172 8.95679 0.902507 8.9913 0.68712 8.81849C0.471733 8.64569 0.437216 8.33099 0.610025 8.1156L1.36545 7.17404C1.12772 6.87424 0.914602 6.55072 0.726286 6.20377C0.668343 6.09938 0.624806 5.99084 0.594942 5.87904C0.523677 5.61225 0.682179 5.3382 0.948967 5.26694Z"
-        fill="#7F8283"
+        fill={colors.contentSecondary}
       />
     </Svg>
   );
@@ -986,7 +1035,7 @@ function ChartLegendCard({ data, activeIndex, filterMode, onFilterChange }: {
   );
 }
 
-function GrowthTable() {
+function GrowthTable({ growthData }: { growthData: StockConfig['growthData'] }) {
   return (
     <View style={styles.growthTable}>
       <View style={styles.growthHeader}>
@@ -1034,8 +1083,14 @@ function GrowthTable() {
 // ─── Market Depth ─────────────────────────────────────────────────────────────
 const MD_MAX_PILL = 63; // max pill width in px, proportional to max qty
 
-function MarketDepthWidget() {
+function MarketDepthWidget({ stock }: { stock: StockConfig }) {
   const [expanded, setExpanded] = useState(true);
+  const MD_BIDS = stock.mdBids;
+  const MD_ASKS = stock.mdAsks;
+  const MD_BUY_PCT  = stock.mdBuyPct;
+  const MD_SELL_PCT = stock.mdSellPct;
+  const MD_BID_TOTAL = stock.mdBidTotal;
+  const MD_ASK_TOTAL = stock.mdAskTotal;
   const maxBid = Math.max(...MD_BIDS.map(r => r.qty));
   const maxAsk = Math.max(...MD_ASKS.map(r => r.qty));
 
@@ -1148,11 +1203,12 @@ function RangeBar({
   high: number;
   current: number;
 }) {
-  const pct = Math.min(Math.max((current - low) / (high - low), 0), 1);
+  const denom = high - low;
+  const pct = denom > 0 ? Math.min(Math.max((current - low) / denom, 0), 1) : 0.5;
   return (
     <View style={styles.rangeBarWrap}>
       <View style={styles.rangeBarTrack} />
-      {/* Triangle marker */}
+      {/* Triangle marker sits below the divider */}
       <View style={[styles.rangeMarker, { left: `${pct * 100}%` as any }]} />
     </View>
   );
@@ -1222,11 +1278,11 @@ function PerformanceWidget({ meta }: { meta: ChartMeta | null }) {
             <View style={styles.perfRangeBlock}>
               <View style={styles.perfRangeLabels}>
                 <View>
-                  <Text style={styles.perfRangeCaption}>Today's low</Text>
+                  <Text style={styles.perfRangeCaption}>Today’s low</Text>
                   <Text style={styles.perfRangeValue}>{fmt(meta?.dayLow)}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={styles.perfRangeCaption}>Today's high</Text>
+                  <Text style={styles.perfRangeCaption}>Today’s high</Text>
                   <Text style={styles.perfRangeValue}>{fmt(meta?.dayHigh)}</Text>
                 </View>
               </View>
@@ -1264,8 +1320,67 @@ function PerformanceWidget({ meta }: { meta: ChartMeta | null }) {
   );
 }
 
+// ─── Fundamentals ─────────────────────────────────────────────────────────────
+function FundRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.fundRow}>
+      <Text style={styles.fundLabel}>{label}</Text>
+      <Text style={styles.fundValue}>{value}</Text>
+    </View>
+  );
+}
+
+function FundamentalsWidget() {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <View style={styles.perfSection}>
+      <TouchableOpacity
+        style={styles.sectionHeader}
+        onPress={() => setExpanded(v => !v)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.perfTitleRow}>
+          <Text style={styles.sectionHeaderTitle}>Fundamentals</Text>
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            size={20}
+            color={colors.contentSecondary}
+            strokeWidth={1.5}
+          />
+        </View>
+        <HugeiconsIcon
+          icon={expanded ? ArrowUp01Icon : ArrowDown01Icon}
+          size={24}
+          color={colors.contentSecondary}
+          strokeWidth={1.5}
+        />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={styles.fundContent}>
+          <View style={styles.fundColumn}>
+            <FundRow label="Mkt cap"        value="₹1,01,491Cr" />
+            <FundRow label="P/E (TTM)"      value="-32.56" />
+            <FundRow label="P/B"            value="9.91" />
+            <FundRow label="Industry P/E"   value="181.27" />
+            <FundRow label="Debt to equity" value="0.17" />
+          </View>
+          <View style={styles.fundColumn}>
+            <FundRow label="ROE"        value="-30.50%" />
+            <FundRow label="EPS (TTM)"  value="-12.50" />
+            <FundRow label="Div. yield" value="0.00%" />
+            <FundRow label="Book value" value="41.07" />
+            <FundRow label="Face value" value="1" />
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
 // ─── GR-1 Insights ────────────────────────────────────────────────────────────
-function GR1InsightsCard({ scrollY }: { scrollY: Animated.Value }) {
+function GR1InsightsCard({ scrollY, insights }: { scrollY: Animated.Value; insights: string[] }) {
   const [expanded, setExpanded] = useState(true);
 
   const hasAnimated = useRef(false);
@@ -1412,7 +1527,7 @@ function GR1InsightsCard({ scrollY }: { scrollY: Animated.Value }) {
 
         {expanded && (
           <>
-            {gr1Insights.map((insight, i) => (
+            {insights.map((insight, i) => (
               <View key={i} style={styles.gr1InsightRow}>
                 <View style={styles.gr1ArrowBox}>
                   <HugeiconsIcon icon={ArrowTurnForwardIcon} size={16} color={colors.contentPrimary} strokeWidth={1.5} />
@@ -1440,39 +1555,288 @@ function GR1InsightsCard({ scrollY }: { scrollY: Animated.Value }) {
   );
 }
 
-function AboutSection() {
-  const [expanded, setExpanded] = useState(false);
-
-  const details = [
-    { label: 'MD/CEO', value: 'Sriharsha Majety' },
-    { label: 'Parent organization', value: 'Swiggy Limited' },
-    { label: 'NSE Symbol', value: 'SWIGGY' },
-    { label: 'Industry', value: 'E-Commerce/Aggregator', underline: true },
-  ];
+function AboutSection({ about }: { about: StockConfig['about'] }) {
+  const [expanded, setExpanded] = useState(true);
+  const [readMore, setReadMore] = useState(false);
 
   return (
     <View style={styles.aboutSection}>
-      <SectionHeader title="About" expanded={true} onToggle={() => {}} />
-      <View style={styles.aboutContent}>
-        {details.map((d) => (
-          <View key={d.label} style={styles.aboutRow}>
-            <Text style={styles.aboutLabel}>{d.label}</Text>
-            <Text style={[styles.aboutValue, d.underline && styles.underlineDashed]}>
-              {d.value}
-            </Text>
+      <SectionHeader title="About" expanded={expanded} onToggle={() => setExpanded(v => !v)} />
+      {expanded && (
+        <View style={styles.aboutContent}>
+          <View style={styles.aboutDetailsBlock}>
+            {about.details.map((d) => (
+              <View key={d.label} style={styles.aboutRow}>
+                <Text style={styles.aboutLabel}>{d.label}</Text>
+                {d.underline ? (
+                  <View style={styles.aboutValuePill}>
+                    <Text style={styles.aboutValue}>{d.value}</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.aboutValue}>{d.value}</Text>
+                )}
+              </View>
+            ))}
           </View>
-        ))}
 
-        <Text style={styles.aboutDescription} numberOfLines={expanded ? undefined : 3}>
-          Swiggy is one of India's largest online food delivery platforms, founded in 2014 and
-          headquartered in Bengaluru. It connects customers with a wide range of restaurants and
-          cloud kitchens, offering everything from local street food to premium dining experiences.
-        </Text>
+          <View style={styles.aboutDescriptionBlock}>
+            <Text style={styles.aboutDescription} numberOfLines={readMore ? undefined : 4}>
+              {about.description}
+            </Text>
+            <TouchableOpacity onPress={() => setReadMore(!readMore)} activeOpacity={0.7}>
+              <Text style={styles.readMoreBtn}>{readMore ? 'Read less' : 'Read more'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
 
-        <TouchableOpacity onPress={() => setExpanded(!expanded)} activeOpacity={0.7}>
-          <Text style={styles.readMoreBtn}>{expanded ? 'Read less' : 'Read more'}</Text>
-        </TouchableOpacity>
-      </View>
+// ─── Shareholder pattern ──────────────────────────────────────────────────────
+const SHAREHOLDER_QUARTERS = ['Mar ‘25', 'Jun ‘25', 'Sep ‘25', 'Dec ‘25', 'Mar ‘26'] as const;
+
+const SHAREHOLDER_DATA: Record<string, Array<{ label: string; pct: number }>> = {
+  'Mar ‘25': [
+    { label: 'Retail',       pct: 78.42 },
+    { label: 'Mutual funds', pct: 10.20 },
+    { label: 'FIIs',         pct: 7.85  },
+    { label: 'DIIs',         pct: 3.53  },
+  ],
+  'Jun ‘25': [
+    { label: 'Retail',       pct: 78.95 },
+    { label: 'Mutual funds', pct: 10.05 },
+    { label: 'FIIs',         pct: 7.55  },
+    { label: 'DIIs',         pct: 3.45  },
+  ],
+  'Sep ‘25': [
+    { label: 'Retail',       pct: 79.01 },
+    { label: 'Mutual funds', pct: 9.92  },
+    { label: 'FIIs',         pct: 7.42  },
+    { label: 'DIIs',         pct: 3.65  },
+  ],
+  'Dec ‘25': [
+    { label: 'Retail',       pct: 79.06 },
+    { label: 'Mutual funds', pct: 9.88  },
+    { label: 'FIIs',         pct: 7.38  },
+    { label: 'DIIs',         pct: 3.68  },
+  ],
+  'Mar ‘26': [
+    { label: 'Retail',       pct: 79.09 },
+    { label: 'Mutual funds', pct: 9.85  },
+    { label: 'FIIs',         pct: 7.37  },
+    { label: 'DIIs',         pct: 3.70  },
+  ],
+};
+
+function ShareholderPatternWidget() {
+  const [expanded, setExpanded] = useState(true);
+  const [activeQuarter, setActiveQuarter] = useState<typeof SHAREHOLDER_QUARTERS[number]>('Mar ‘26');
+  const rows = SHAREHOLDER_DATA[activeQuarter];
+  const maxPct = Math.max(...rows.map(r => r.pct));
+
+  return (
+    <View style={styles.shareholderSection}>
+      <TouchableOpacity
+        style={styles.sectionHeader}
+        onPress={() => setExpanded(v => !v)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.sectionHeaderTitle}>Shareholder pattern</Text>
+        <HugeiconsIcon
+          icon={expanded ? ArrowUp01Icon : ArrowDown01Icon}
+          size={24}
+          color={colors.contentSecondary}
+          strokeWidth={1.5}
+        />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={{ gap: 16 }}>
+          <View style={styles.shareholderPills}>
+            {SHAREHOLDER_QUARTERS.map((q) => {
+              const selected = q === activeQuarter;
+              return (
+                <TouchableOpacity
+                  key={q}
+                  style={[styles.shareholderPill, selected && styles.shareholderPillSelected]}
+                  onPress={() => setActiveQuarter(q)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.shareholderPillLabel, selected && styles.shareholderPillLabelSelected]}>
+                    {q}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <View style={styles.shareholderRows}>
+            {rows.map((r) => (
+              <View key={r.label} style={styles.shareholderRow}>
+                <Text style={styles.shareholderLabel}>{r.label}</Text>
+                <View style={styles.shareholderBarTrack}>
+                  <View style={[styles.shareholderBarFill, { width: `${(r.pct / maxPct) * 100}%` }]} />
+                </View>
+                <Text style={styles.shareholderValue}>{r.pct.toFixed(2)}%</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── Similar stocks / Top mutual fund invested helpers ──────────────────────
+const DSL_LOGO = (ticker: string) =>
+  `https://mint-design-system.vercel.app/logos/stocks/${ticker}.png`;
+
+function ListItemAvatar({ uri, fallback }: { uri?: string; fallback: string }) {
+  const [failed, setFailed] = useState(false);
+  if (uri && !failed) {
+    return (
+      <Image
+        source={{ uri }}
+        style={styles.listItemLogo}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <View style={[styles.listItemLogo, styles.listItemLogoFallback]}>
+      <Text style={styles.listItemLogoFallbackText}>{fallback.slice(0, 2).toUpperCase()}</Text>
+    </View>
+  );
+}
+
+type SimilarRow = {
+  name: string;
+  ticker: string;
+  logoUri?: string;
+  price: string;
+  change: string;
+  positive: boolean;
+};
+
+const SIMILAR_STOCKS: SimilarRow[] = [
+  { name: 'Eternal (Zomato)',                  ticker: 'ZOMATO',     logoUri: DSL_LOGO('ZOMATO'),     price: '₹312.25',   change: '+6.45 (2.11%)', positive: true  },
+  { name: 'Info Edge',                         ticker: 'NAUKRI',     logoUri: DSL_LOGO('NAUKRI'),     price: '₹1,325.25', change: '+6.45 (2.11%)', positive: true  },
+  { name: 'Paytm - One 97 Communications Ltd', ticker: 'PAYTM',      logoUri: DSL_LOGO('PAYTM'),      price: '₹312.25',   change: '+6.45 (2.11%)', positive: true  },
+  { name: 'Cartrade Tech',                     ticker: 'CARTRADE',   logoUri: DSL_LOGO('CARTRADE'),   price: '₹1,155.25', change: '+6.45 (2.11%)', positive: true  },
+  { name: 'Just Dial',                         ticker: 'JUSTDIAL',   logoUri: DSL_LOGO('JUSTDIAL'),   price: '₹823.80',   change: '-7.55 (0.91%)', positive: false },
+  { name: 'One Mobikwik Systems',              ticker: 'MOBIKWIK',   logoUri: DSL_LOGO('MOBIKWIK'),   price: '₹312.25',   change: '+6.45 (2.11%)', positive: true  },
+];
+
+function SimilarStocksWidget() {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <View style={styles.listSection}>
+      <TouchableOpacity
+        style={styles.sectionHeader}
+        onPress={() => setExpanded(v => !v)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.sectionHeaderTitle}>Similar stocks</Text>
+        <HugeiconsIcon
+          icon={expanded ? ArrowUp01Icon : ArrowDown01Icon}
+          size={24}
+          color={colors.contentSecondary}
+          strokeWidth={1.5}
+        />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View>
+          <View style={styles.listColumnHeader}>
+            <Text style={styles.listColumnHeaderLeft}>Stock</Text>
+            <View style={styles.listColumnHeaderRight}>
+              <Text style={styles.listColumnHeaderTextDashed}>Market price</Text>
+            </View>
+          </View>
+
+          {SIMILAR_STOCKS.map((s, i) => (
+            <View key={s.ticker}>
+              <TouchableOpacity style={styles.listItem} activeOpacity={0.7}>
+                <ListItemAvatar uri={s.logoUri} fallback={s.ticker} />
+                <View style={styles.listItemMiddle}>
+                  <Text style={styles.listItemTitle} numberOfLines={2}>{s.name}</Text>
+                </View>
+                <View style={styles.listItemEnd}>
+                  <Text style={styles.listItemPrice}>{s.price}</Text>
+                  <Text style={[styles.listItemChange, { color: s.positive ? colors.contentPositive : colors.contentNegative }]}>
+                    {s.change}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              {i < SIMILAR_STOCKS.length - 1 && (
+                <View style={styles.listDividerWrap}>
+                  <View style={styles.listDivider} />
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+const TOP_FUNDS = [
+  { name: 'Invesco India Large & Mid Cap Fund Direct Growth', ticker: 'INVESCO', logoUri: DSL_LOGO('INVESCOMF'), aum: '4.52' },
+  { name: 'Invesco India Mid Cap Fund Direct Growth',          ticker: 'INVESCO', logoUri: DSL_LOGO('INVESCOMF'), aum: '4.22' },
+  { name: 'Franklin India Large & Mid Cap Fund Direct Growth', ticker: 'FRANKLIN', logoUri: DSL_LOGO('FRANKLINMF'), aum: '3.82' },
+  { name: 'Invesco India Smallcap Fund Direct Growth',         ticker: 'INVESCO', logoUri: DSL_LOGO('INVESCOMF'), aum: '3.28' },
+];
+
+function TopMutualFundsWidget() {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <View style={styles.listSection}>
+      <TouchableOpacity
+        style={styles.sectionHeader}
+        onPress={() => setExpanded(v => !v)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.sectionHeaderTitle}>Top mutual fund invested</Text>
+        <HugeiconsIcon
+          icon={expanded ? ArrowUp01Icon : ArrowDown01Icon}
+          size={24}
+          color={colors.contentSecondary}
+          strokeWidth={1.5}
+        />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View>
+          <View style={styles.listColumnHeader}>
+            <Text style={styles.listColumnHeaderLeft}>Fund name</Text>
+            <Text style={styles.listColumnHeaderRightText}>AUM %</Text>
+          </View>
+
+          {TOP_FUNDS.map((f, i) => (
+            <View key={f.name}>
+              <TouchableOpacity style={styles.listItem} activeOpacity={0.7}>
+                <ListItemAvatar uri={f.logoUri} fallback={f.ticker} />
+                <View style={styles.listItemMiddle}>
+                  <Text style={styles.listItemTitle} numberOfLines={2}>{f.name}</Text>
+                </View>
+                <View style={[styles.listItemEnd, { width: 56 }]}>
+                  <Text style={styles.listItemPrice}>{f.aum}</Text>
+                </View>
+              </TouchableOpacity>
+              {i < TOP_FUNDS.length - 1 && (
+                <View style={styles.listDividerWrap}>
+                  <View style={styles.listDivider} />
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -1498,31 +1862,39 @@ function BottomDock() {
 const TABS = ['Overview', 'Technicals', 'F&O', 'News'];
 const FILTER_PILLS = ['Quarterly', 'Yearly'];
 
-// Font family aliases
-const F = {
-  regular:  'GrowwSans-Regular',
-  medium:   'GrowwSans-Medium',
-  bold:     'GrowwSans-Bold',
-  light:    'GrowwSans-Light',
-  sohneBold: 'Sohne-Kraftig',
-} as const;
+// Font family aliases now come from ./tokens (imported as F at top of file).
 
-export default function StocksProductPage() {
+export default function StocksProductPage({
+  onBack,
+  stock = STOCK_CONFIGS.ZOMATO,
+}: {
+  onBack?: () => void;
+  stock?: StockConfig;
+}) {
+  const { mode } = useTheme();
+  styles = makeStyles();
   const [activeTab, setActiveTab] = useState(0);
   const [activePill, setActivePill] = useState(0);
-  const [activeBarIndex, setActiveBarIndex] = useState(4); // last item selected by default
+  const [activeBarIndex, setActiveBarIndex] = useState(4);
   const [financialExpanded, setFinancialExpanded] = useState(true);
   const [filterMode, setFilterMode] = useState<'both' | 'revenue' | 'profit'>('both');
   const [liveMeta, setLiveMeta] = useState<ChartMeta | null>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
+  const gr1 = useGR1Sheet();
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={colors.backgroundPrimary} />
+      <StatusBar barStyle={mode === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.backgroundPrimary} />
 
       {/* Fixed header — status bar + app bar only */}
       <View style={styles.header}>
-        <TopAppBar meta={liveMeta} scrollY={scrollY} />
+        <TopAppBar
+          onBack={onBack}
+          shortName={stock.shortName}
+          meta={liveMeta}
+          scrollY={scrollY}
+          onGR1Press={gr1.openSheet}
+        />
       </View>
 
       {/* Scrollable body — index 1 (TabsBar) is sticky */}
@@ -1538,20 +1910,23 @@ export default function StocksProductPage() {
         )}
       >
         {/* index 0: Hero section */}
-        <StockHeroSection onMetaUpdate={setLiveMeta} />
+        <StockHeroSection stock={stock} onMetaUpdate={setLiveMeta} />
 
         {/* index 1: Tabs — sticks to top on scroll */}
         <TabsBar tabs={TABS} activeTab={activeTab} onTabPress={setActiveTab} />
 
         {/* index 2+: Tab content */}
         {/* GR-1 Insights */}
-        <GR1InsightsCard scrollY={scrollY} />
+        <GR1InsightsCard scrollY={scrollY} insights={stock.insights} />
 
         {/* Market Depth */}
-        <MarketDepthWidget />
+        <MarketDepthWidget stock={stock} />
 
         {/* Performance */}
         <PerformanceWidget meta={liveMeta} />
+
+        {/* Fundamentals */}
+        <FundamentalsWidget />
 
         {/* Financial Performance */}
         <View style={styles.section}>
@@ -1578,14 +1953,14 @@ export default function StocksProductPage() {
               {/* Chart card + bar chart */}
               <View style={styles.chartSection}>
                 <ChartLegendCard
-                  data={activePill === 0 ? QUARTERLY_DATA : YEARLY_DATA}
+                  data={activePill === 0 ? stock.quarterlyData : stock.yearlyData}
                   activeIndex={activeBarIndex}
                   filterMode={filterMode}
                   onFilterChange={setFilterMode}
                 />
                 <View style={styles.chartArea}>
                   <FinancialBarChart
-                    data={activePill === 0 ? QUARTERLY_DATA : YEARLY_DATA}
+                    data={activePill === 0 ? stock.quarterlyData : stock.yearlyData}
                     mode={activePill === 0 ? 'quarterly' : 'yearly'}
                     activeIndex={activeBarIndex}
                     onBarPress={setActiveBarIndex}
@@ -1595,14 +1970,23 @@ export default function StocksProductPage() {
               </View>
 
               {/* Growth table */}
-              <GrowthTable />
+              <GrowthTable growthData={stock.growthData} />
             </>
           )}
           <View style={styles.divider} />
         </View>
 
         {/* About */}
-        <AboutSection />
+        <AboutSection about={stock.about} />
+
+        {/* Shareholder pattern */}
+        <ShareholderPatternWidget />
+
+        {/* Similar stocks */}
+        <SimilarStocksWidget />
+
+        {/* Top mutual fund invested */}
+        <TopMutualFundsWidget />
 
         {/* Spacer for dock */}
         <View style={{ height: 80 }} />
@@ -1610,26 +1994,24 @@ export default function StocksProductPage() {
 
       {/* Fixed bottom dock */}
       <BottomDock />
+
+      <GR1Layer state={gr1} />
     </SafeAreaView>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const makeStyles = () => StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.backgroundPrimary,
   },
 
-  // Header
+  // Header — no shadow per v0.31 §3.1; the 1px tab-bar border provides separation when scrolled.
   header: {
     backgroundColor: colors.backgroundPrimary,
     zIndex: 10,
-    ...Platform.select({
-      android: { elevation: 2 },
-      ios: { shadowColor: '#000', shadowOpacity: 0.05, shadowOffset: { width: 0, height: 1 }, shadowRadius: 2 },
-    }),
   },
   // App bar
   appBar: {
@@ -1646,6 +2028,7 @@ const styles = StyleSheet.create({
   },
   appBarTitle: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 16,
     color: colors.contentPrimary,
     lineHeight: 24,
@@ -1653,7 +2036,7 @@ const styles = StyleSheet.create({
   appBarSubtitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+    gap: 4,
   },
   appBarPrice: {
     fontFamily: F.medium,
@@ -1661,8 +2044,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.contentSecondary,
   },
+  // Semantic colour MUST pair with *-heavy weight per v0.31 §2.2 — body-small-heavy.
   appBarChange: {
     fontFamily: F.medium,
+    fontWeight: '500',
     fontSize: 12,
     lineHeight: 18,
     color: colors.contentPositive,
@@ -1701,6 +2086,7 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 16,
     color: colors.contentSecondary,
     lineHeight: 24,
@@ -1708,6 +2094,7 @@ const styles = StyleSheet.create({
   tabLabelActive: {
     color: colors.contentPrimary,
   },
+  // Full tab-width indicator — matches stocks-PP canonical implementation.
   tabHighlighter: {
     position: 'absolute',
     bottom: 0,
@@ -1739,9 +2126,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   companyLogo: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 32,
+    height: 32,
+    borderRadius: 5.333,
+  },
+  // Grouped block for ticker row + name (per Figma 6248:38771)
+  heroNameBlock: {
+    gap: 0,
   },
   // Ticker row: "HDFCBANK • NSE ⌄"
   heroTickerRow: {
@@ -1774,6 +2165,7 @@ const styles = StyleSheet.create({
   },
   heroPrice: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 24,
     color: colors.contentPrimary,
     lineHeight: 32,
@@ -1810,6 +2202,29 @@ const styles = StyleSheet.create({
     position: 'relative',
     marginHorizontal: 0,
     marginBottom: 0,
+  },
+  scrubTooltip: {
+    position: 'absolute',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.backgroundSurfaceZ1,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 4,
+  },
+  scrubTooltipValue: {
+    fontFamily: F.regular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  scrubTooltipDate: {
+    fontFamily: F.medium,
+    fontSize: 10,
+    lineHeight: 12,
+    color: colors.contentTertiary,
   },
   heroExpandBtn: {
     position: 'absolute',
@@ -1868,12 +2283,17 @@ const styles = StyleSheet.create({
     padding: 16,
     marginHorizontal: 16,
     marginBottom: 12,
-    backgroundColor: colors.backgroundPrimary,
+    backgroundColor: colors.backgroundSurfaceZ1,
   },
   heroHoldingsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  heroHoldingsSharesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
   heroHoldingsShares: {
     fontFamily: F.medium,
@@ -1915,6 +2335,7 @@ const styles = StyleSheet.create({
   sectionHeaderTitle: {
     flex: 1,
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 18,
     color: colors.contentPrimary,
     lineHeight: 28,
@@ -1932,6 +2353,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
   },
+  // Canonical Chip — stocks-PP/src/screens/StocksExploreScreen.tsx:1387.
   pill: {
     height: 32,
     paddingHorizontal: 16,
@@ -1944,6 +2366,7 @@ const styles = StyleSheet.create({
   pillSelected: {
     backgroundColor: colors.backgroundTertiary,
     borderColor: colors.borderNeutral,
+    borderWidth: 1.5,
   },
   pillLabel: {
     fontFamily: F.medium,
@@ -1968,6 +2391,7 @@ const styles = StyleSheet.create({
   },
   legendDate: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 10,
     color: colors.contentPrimary,
     letterSpacing: 2,
@@ -1995,6 +2419,7 @@ const styles = StyleSheet.create({
   },
   legendMetricLabel: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 10,
     color: colors.contentSecondary,
     letterSpacing: 2,
@@ -2003,6 +2428,7 @@ const styles = StyleSheet.create({
   },
   legendValue: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 16,
     color: colors.contentPrimary,
     lineHeight: 24,
@@ -2080,12 +2506,13 @@ const styles = StyleSheet.create({
   xAxisLabelActive: {
     color: colors.contentPrimary,
   },
+  // body-xsmall-heavy per v0.18 typography scale.
   xAxisGrowth: {
     fontFamily: F.medium,
-    fontSize: 9,
+    fontSize: 10,
     textAlign: 'center',
     opacity: 0.7,
-    lineHeight: 11,
+    lineHeight: 12,
   },
 
   // Divider
@@ -2117,6 +2544,7 @@ const styles = StyleSheet.create({
   growthHeaderGrowth: {
     flex: 1,
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 10,
     color: colors.contentSecondary,
     letterSpacing: 2,
@@ -2126,6 +2554,7 @@ const styles = StyleSheet.create({
   },
   growthHeaderMetric: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 10,
     color: colors.contentSecondary,
     letterSpacing: 2,
@@ -2181,6 +2610,9 @@ const styles = StyleSheet.create({
   aboutContent: {
     paddingHorizontal: 16,
     paddingTop: 8,
+    gap: 20,
+  },
+  aboutDetailsBlock: {
     gap: 12,
   },
   aboutRow: {
@@ -2201,17 +2633,20 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: 'right',
   },
-  underlineDashed: {
+  // Tertiary-button affordance for tappable values (e.g. "Industry → E-Commerce/Aggregator")
+  aboutValuePill: {
     borderBottomWidth: 1,
-    borderBottomColor: colors.contentSecondary,
+    borderBottomColor: colors.contentPrimary,
     borderStyle: 'dashed',
+  },
+  aboutDescriptionBlock: {
+    gap: 8,
   },
   aboutDescription: {
     fontFamily: F.regular,
     fontSize: 14,
     color: colors.contentPrimary,
     lineHeight: 20,
-    marginTop: 4,
   },
   readMoreBtn: {
     fontFamily: F.medium,
@@ -2247,6 +2682,7 @@ const styles = StyleSheet.create({
   },
   gr1Title: {
     fontFamily: F.sohneBold,
+    fontWeight: '400',
     fontSize: 16,
     color: colors.contentPrimary,
     lineHeight: 24,
@@ -2348,8 +2784,9 @@ const styles = StyleSheet.create({
   },
   dockButtonLabel: {
     fontFamily: F.medium,
+    fontWeight: '500',
     fontSize: 16,
-    color: '#ffffff',
+    color: colors.contentOnColour,
     lineHeight: 24,
   },
   homeIndicator: {
@@ -2447,10 +2884,10 @@ const styles = StyleSheet.create({
     height: 18,
   },
   mdQtyPillBid: {
-    backgroundColor: '#E9FAF3',   // green100 — backgroundAccentSubtle
+    backgroundColor: colors.backgroundPositiveSubtle,
   },
   mdQtyPillAsk: {
-    backgroundColor: '#FFF1ED',   // red100 — backgroundNegativeSubtle
+    backgroundColor: colors.backgroundNegativeSubtle,
   },
   mdQtyText: {
     fontFamily: F.medium,
@@ -2458,10 +2895,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   mdQtyTextBid: {
-    color: '#00825C',   // green700 — contentonPositiveSubtle
+    color: colors.contentOnPositiveSubtle,
   },
   mdQtyTextAsk: {
-    color: '#D23A15',   // red700 — contentonNegativeSubtle
+    color: colors.contentOnNegativeSubtle,
   },
   mdTotalLabel: {
     fontFamily: F.medium,
@@ -2514,27 +2951,27 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   rangeBarWrap: {
-    height: 20,
-    justifyContent: 'center',
+    height: 22,
+    justifyContent: 'flex-start',
   },
   rangeBarTrack: {
     height: 4,
     borderRadius: 2,
-    backgroundColor: colors.contentPositive,
+    backgroundColor: colors.borderPrimary,
   },
   rangeMarker: {
     position: 'absolute',
-    // triangle pointing up via border trick
+    // triangle pointing up via border trick (apex touches divider from below)
     width: 0,
     height: 0,
     borderLeftWidth: 5,
     borderRightWidth: 5,
-    borderBottomWidth: 8,
+    borderBottomWidth: 7,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
     borderBottomColor: colors.contentPrimary,
     marginLeft: -5,
-    top: 0,
+    top: 4,
   },
   perfGrid: {
     flexDirection: 'row',
@@ -2557,4 +2994,209 @@ const styles = StyleSheet.create({
     color: colors.contentPrimary,
     lineHeight: 20,
   },
+
+  // Fundamentals
+  fundContent: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 10,
+  },
+  fundColumn: {
+    flex: 1,
+    gap: 16,
+  },
+  fundRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  fundLabel: {
+    fontFamily: F.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  fundValue: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+    textAlign: 'right',
+  },
+
+  // Shareholder pattern
+  shareholderSection: {
+    backgroundColor: colors.backgroundPrimary,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderPrimary,
+    paddingBottom: 24,
+  },
+  shareholderPills: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  shareholderPill: {
+    height: 24,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 99,
+  },
+  shareholderPillSelected: {
+    borderWidth: 1,
+    borderColor: colors.contentPrimary,
+    backgroundColor: colors.backgroundTertiary,
+  },
+  shareholderPillLabel: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentSecondary,
+  },
+  shareholderPillLabelSelected: {
+    color: colors.contentPrimary,
+  },
+  shareholderRows: {
+    paddingHorizontal: 16,
+    gap: 16,
+  },
+  shareholderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  shareholderLabel: {
+    width: 80,
+    fontFamily: F.regular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  shareholderBarTrack: {
+    flex: 1,
+    height: 10,
+    justifyContent: 'center',
+  },
+  shareholderBarFill: {
+    height: 10,
+    borderRadius: 2,
+    backgroundColor: colors.dataVizMintGreen,
+  },
+  shareholderValue: {
+    width: 48,
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+    textAlign: 'right',
+  },
+
+  // Similar stocks / Top mutual funds — shared list-item styles
+  listSection: {
+    backgroundColor: colors.backgroundPrimary,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderPrimary,
+    paddingBottom: 24,
+  },
+  listColumnHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    paddingHorizontal: 16,
+  },
+  listColumnHeaderLeft: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  listColumnHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  listColumnHeaderTextDashed: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.contentSecondary,
+    borderStyle: 'dashed',
+  },
+  listColumnHeaderRightText: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+    textAlign: 'right',
+  },
+  listItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+    padding: 16,
+    gap: 16,
+  },
+  listItemLogo: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 0.5,
+    borderColor: colors.borderPrimary,
+  },
+  listItemLogoFallback: {
+    backgroundColor: colors.backgroundTertiary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listItemLogoFallbackText: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    color: colors.contentSecondary,
+  },
+  listItemMiddle: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  listItemTitle: {
+    fontFamily: F.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  listItemEnd: {
+    alignItems: 'flex-end',
+    gap: 2,
+    maxWidth: 96,
+  },
+  listItemPrice: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+    textAlign: 'right',
+  },
+  listItemChange: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'right',
+  },
+  listDividerWrap: {
+    paddingLeft: 72,
+  },
+  listDivider: {
+    height: 1,
+    backgroundColor: colors.borderPrimary,
+  },
 });
+
+let styles = makeStyles();

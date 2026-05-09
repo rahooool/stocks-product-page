@@ -1,0 +1,2272 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+  StatusBar,
+  SafeAreaView,
+  Image,
+  Platform,
+  Animated,
+} from 'react-native';
+import Svg, { Path, Circle, Rect, G, Defs, LinearGradient, Stop } from 'react-native-svg';
+import { SvgXml } from 'react-native-svg';
+import { HugeiconsIcon } from '@hugeicons/react-native';
+import { Search01Icon } from '@hugeicons/core-free-icons';
+import { StockConfig, STOCK_CONFIGS } from './stocks';
+import { GR1Icon, useGR1Sheet, GR1Layer } from './GR1Sheet';
+
+// ─── Design tokens ───────────────────────────────────────────────────────────
+import { colors, fonts as F, useTheme } from './tokens';
+
+// ─── Mint DS stock logo CDN ───────────────────────────────────────────────────
+const DSL = (ticker: string) =>
+  `https://mint-design-system.vercel.app/logos/stocks/${ticker}.png`;
+
+// ─── Assets ───────────────────────────────────────────────────────────────────
+const ASSETS = {
+  profilePic:  'https://www.figma.com/api/mcp/asset/89b10bc5-99a5-4de9-a23a-eb37f48617c1',
+  motilalLogo: null as string | null,
+  iciciLogo:   DSL('ICICIBANK'),
+  sbiLogo:     DSL('SBIN'),
+  hdfcLogo:    DSL('HDFCBANK'),
+  kotakLogo:   DSL('KOTAKBANK'),
+  axisLogo:    require('./assets/axisbank-logo.png') as ReturnType<typeof require>,
+  zomatoLogo:  DSL('ETERNAL'),
+  pvrLogo:     null as string | null,
+  suzlonLogo:  null as string | null,
+};
+
+// ─── Live quote fetching ──────────────────────────────────────────────────────
+const YF_BASE = Platform.OS === 'web'
+  ? 'http://localhost:8082'
+  : 'https://query1.finance.yahoo.com';
+
+interface Quote { price: number; change: number; changePct: number; prevClose: number; }
+
+import { getLtp, pickNseRow } from './groww';
+
+// Map a Yahoo-style ticker (e.g. "ETERNAL.NS", "^NSEI") to Groww's plain symbol.
+// Returns null when Groww doesn't track this kind of symbol (e.g. indices).
+function growwSymbolFor(yfSym: string): string | null {
+  if (yfSym.startsWith('^')) return null;        // indices — Groww needs index_details, skip
+  return yfSym.replace(/\.(NS|BO)$/, '');
+}
+
+// Try Groww MCP first; fall back to Yahoo via the local proxy.
+async function fetchQuote(symbol: string): Promise<Quote | null> {
+  const grow = growwSymbolFor(symbol);
+  if (grow) {
+    try {
+      const rows = await getLtp([grow]);
+      const row = pickNseRow(rows, grow);
+      if (row) {
+        return {
+          price: row.ltp,
+          prevClose: row.prev_close,
+          change: row.day_change,
+          changePct: row.day_change_perc,
+        };
+      }
+    } catch {/* fall through */}
+  }
+  try {
+    const res = await fetch(
+      `${YF_BASE}/v8/finance/chart/${symbol}?interval=1d&range=1d&includePrePost=false`,
+      { headers: { Accept: 'application/json' } },
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const m = json.chart.result[0].meta;
+    const price = m.regularMarketPrice as number;
+    const prev  = (m.chartPreviousClose ?? m.previousClose) as number;
+    return { price, prevClose: prev, change: price - prev, changePct: ((price - prev) / prev) * 100 };
+  } catch {
+    return null;
+  }
+}
+
+// Symbols to fetch on the homepage
+const INDEX_SYMBOLS   = ['^NSEI', '^BSESN', '^NSEBANK'];
+const WATCHLIST_SYMS  = ['ICICIBANK.NS', 'SBIN.NS', 'HDFCBANK.NS', 'KOTAKBANK.NS', 'AXISBANK.NS'];
+const MOSTTRADED_SYMS = ['ETERNAL.NS', 'PVRINOX.NS', 'SUZLON.NS'];
+const ALL_SYMBOLS     = [...INDEX_SYMBOLS, ...WATCHLIST_SYMS, ...MOSTTRADED_SYMS];
+
+// ─── Data ─────────────────────────────────────────────────────────────────────
+const INDICES = [
+  { name: 'NIFTY50',   symbol: '^NSEI',    value: '24,117.35', change: '+183.20', positive: true  },
+  { name: 'SENSEX',    symbol: '^BSESN',   value: '79,486.10', change: '-412.55', positive: false },
+  { name: 'BANKNIFTY', symbol: '^NSEBANK', value: '52,348.90', change: '+674.80', positive: true  },
+];
+
+const TABS = ['Explore', 'Holdings', 'Positions', 'Orders', 'Watchlists'];
+
+const WATCHLIST_STOCKS = [
+  { ticker: 'ICICIBANK', change: '+1.24%', positive: true,  logo: ASSETS.iciciLogo, config: STOCK_CONFIGS.ICICIBANK  },
+  { ticker: 'SBI',       change: '-0.87%', positive: false, logo: ASSETS.sbiLogo,   config: STOCK_CONFIGS.SBIN       },
+  { ticker: 'HDFCBANK',  change: '+0.31%', positive: true,  logo: ASSETS.hdfcLogo,  config: STOCK_CONFIGS.HDFCBANK   },
+  { ticker: 'KOTAK',     change: '-1.43%', positive: false, logo: ASSETS.kotakLogo, config: STOCK_CONFIGS.KOTAKBANK  },
+  { ticker: 'AXISBANK',  change: '+2.05%', positive: true,  logo: ASSETS.axisLogo,  config: STOCK_CONFIGS.AXISBANK   },
+];
+
+const MOST_TRADED = [
+  { name: 'Zomato',        ticker: 'ETERNAL', price: '₹241.35',   change: '-₹8.45 (3.38%)',   positive: false, logo: ASSETS.zomatoLogo, config: STOCK_CONFIGS.ZOMATO   },
+  { name: 'PVR Inox',      ticker: 'PVRINOX', price: '₹1,389.70', change: '+₹62.30 (4.70%)',  positive: true,  logo: ASSETS.pvrLogo,    config: STOCK_CONFIGS.PVRINOX  },
+  { name: 'Suzlon Energy', ticker: 'SUZLON',  price: '₹61.48',    change: '+₹1.93 (3.24%)',   positive: true,  logo: ASSETS.suzlonLogo, config: STOCK_CONFIGS.SUZLON   },
+];
+
+const MORE_LOGOS = [DSL('RELIANCE'), DSL('INFY'), DSL('TCS'), DSL('TITAN')];
+
+// ─── Top movers data ──────────────────────────────────────────────────────────
+// Figma 2304:6228 — three movers + a "See more" peek card.
+const TOP_MOVERS_STOCKS = [
+  { name: 'Idea',              ticker: 'IDEA',      price: '₹294.13',   change: '-₹13.64 (0.56%)', positive: false, logo: DSL('IDEA'),     config: STOCK_CONFIGS.ZOMATO    },
+  { name: 'IREDA',             ticker: 'IREDA',     price: '₹456.69',   change: '+₹45.60 (3.45%)', positive: true,  logo: DSL('IREDA'),    config: STOCK_CONFIGS.ICICIBANK },
+  { name: 'Baroda BNP Paribas',ticker: 'BARODA',    price: '₹1,208.45', change: '+₹28.45 (3.88%)', positive: true,  logo: DSL('BARODAMF'), config: STOCK_CONFIGS.SBIN      },
+];
+
+const TOP_MOVERS_MORE_LOGOS: Array<string | null> = [
+  DSL('INFOBEAN'), DSL('SWIGGY'), DSL('GROWW'),
+];
+
+// ─── Most traded in MTF (Margin Trading Facility) ─────────────────────────────
+const MTF_STOCKS = [
+  { name: 'Zomato',        ticker: 'ETERNAL', price: '₹294.13',   change: '-₹13.64 (0.56%)', positive: false, logo: ASSETS.zomatoLogo, config: STOCK_CONFIGS.ZOMATO   },
+  { name: 'PVR Inox',      ticker: 'PVRINOX', price: '₹456.69',   change: '+₹45.60 (3.45%)', positive: true,  logo: ASSETS.pvrLogo,    config: STOCK_CONFIGS.PVRINOX  },
+  { name: 'Suzlon energy', ticker: 'SUZLON',  price: '₹1208.45',  change: '+₹28.45 (3.88%)', positive: true,  logo: ASSETS.suzlonLogo, config: STOCK_CONFIGS.SUZLON   },
+];
+const MTF_MORE_LOGOS = [DSL('AGRITECH'), DSL('IDEA'), DSL('AXISBANK'), DSL('SBIN')];
+
+// ─── Top Intraday ─────────────────────────────────────────────────────────────
+const TOP_INTRADAY_STOCKS = [
+  { name: 'SBI',          ticker: 'SBIN',   price: '₹1,1773.21', change: '-₹10.80 (0.56%)', positive: false, logo: ASSETS.sbiLogo,   config: STOCK_CONFIGS.SBIN     },
+  { name: 'PVR Inox',     ticker: 'PVRINOX',price: '₹456.69',    change: '+₹45.60 (3.45%)', positive: true,  logo: ASSETS.pvrLogo,   config: STOCK_CONFIGS.PVRINOX  },
+  { name: 'ABB India Ltd',ticker: 'ABB',    price: '₹5,822.09',  change: '+₹89.80 (0.56%)', positive: true,  logo: DSL('ABB'),       config: STOCK_CONFIGS.AXISBANK },
+  { name: 'CG Power',     ticker: 'CGPOWER',price: '₹695.35',    change: '-₹10.80 (0.56%)', positive: false, logo: DSL('CGPOWER'),   config: STOCK_CONFIGS.ICICIBANK},
+];
+
+// ─── Products and tools illustrations ────────────────────────────────────────
+const TOOL_ILLUS = {
+  Screener: require('./assets/tools/tool-screener.png'),
+  Events:   require('./assets/tools/tool-events.png'),
+  IPO:      require('./assets/tools/tool-ipo.png'),
+  etfA:     require('./assets/tools/tool-etf-a.png'),
+  etfB:     require('./assets/tools/tool-etf-b.png'),
+  bondsV0:  require('./assets/tools/tool-bonds-v0.png'),
+  bondsV1:  require('./assets/tools/tool-bonds-v1.png'),
+  bondsV2:  require('./assets/tools/tool-bonds-v2.png'),
+  bondsV3:  require('./assets/tools/tool-bonds-v3.png'),
+  bondsV4:  require('./assets/tools/tool-bonds-v4.png'),
+  bondsV5:  require('./assets/tools/tool-bonds-v5.png'),
+  bondsV6:  require('./assets/tools/tool-bonds-v6.png'),
+  bondsV7:  require('./assets/tools/tool-bonds-v7.png'),
+  bondsV8:  require('./assets/tools/tool-bonds-v8.png'),
+  bondsV9:  require('./assets/tools/tool-bonds-v9.png'),
+  bondsG2:  require('./assets/tools/tool-bonds-g2.png'),
+  bondsG3:  require('./assets/tools/tool-bonds-g3.png'),
+  bondsG4:  require('./assets/tools/tool-bonds-g4.png'),
+  bondsG5:  require('./assets/tools/tool-bonds-g5.png'),
+};
+
+const TOOLS = ['Screener', 'Events', 'IPO', 'ETF', 'Bonds'] as const;
+type ToolName = typeof TOOLS[number];
+
+const NAV_SVG = {
+  stocksDef: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 20.5 20.5" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="elements"><path id="Icon" d="M17.75 0C19.2688 0 20.5 1.23122 20.5 2.75V17.75C20.5 19.2688 19.2688 20.5 17.75 20.5H2.75C1.23122 20.5 0 19.2688 0 17.75V2.75C1.28853e-07 1.23122 1.23122 1.28851e-07 2.75 0H17.75ZM2.75 1.5C2.05964 1.5 1.5 2.05964 1.5 2.75V17.75C1.5 18.4404 2.05964 19 2.75 19H17.75C18.4404 19 19 18.4404 19 17.75V2.75C19 2.05964 18.4404 1.5 17.75 1.5H2.75ZM14.7197 7.71973C15.0126 7.42683 15.4874 7.42683 15.7803 7.71973C16.0732 8.01262 16.0732 8.48738 15.7803 8.78027L12.9873 11.5732C12.3039 12.2566 11.1961 12.2566 10.5127 11.5732L8.92676 9.9873C8.82915 9.88977 8.67085 9.88977 8.57324 9.9873L5.78027 12.7803C5.48738 13.0732 5.01262 13.0732 4.71973 12.7803C4.42683 12.4874 4.42683 12.0126 4.71973 11.7197L7.5127 8.92676C8.19609 8.24344 9.30391 8.24344 9.9873 8.92676L11.5732 10.5127C11.6709 10.6102 11.8291 10.6102 11.9268 10.5127L14.7197 7.71973Z" fill="${colors.contentTertiary}"/></g></svg>`,
+  mfDef: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 20.0005 20" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="elements"><path id="Icon" d="M5.8457 2.61523C6.2457 2.47164 6.68746 2.66641 6.83105 3.06641C6.97452 3.46624 6.77957 3.90705 6.37988 4.05078C3.48758 5.1277 1.53809 7.92795 1.53809 11.0254C1.5381 15.1279 4.87205 18.4609 8.97461 18.4609C9.9282 18.4609 10.8716 18.2768 11.7637 17.918C12.1534 17.7641 12.6049 17.9486 12.7588 18.3486C12.9125 18.7383 12.7281 19.1899 12.3281 19.3438C11.2513 19.7745 10.1228 19.9893 8.96387 19.9893L8.97461 20C4.03103 20 1.08496e-05 15.9792 0 11.0254C0 7.29221 2.3485 3.90766 5.8457 2.61523ZM8.97461 0C11.1591 5.13458e-05 13.2721 0.646237 15.0977 1.85645C16.913 3.05644 18.3182 4.76909 19.1592 6.7998C20.0002 8.82023 20.2149 11.0254 19.7842 13.1689C19.3637 15.2715 18.3485 17.1998 16.8408 18.7383C16.6973 18.8818 16.5028 18.9643 16.2979 18.9746C16.0927 18.9746 15.9073 18.8921 15.7637 18.7588L8.44141 11.5791C8.29783 11.4355 8.20508 11.2408 8.20508 11.0254V0.769531C8.20508 0.349018 8.5541 0 8.97461 0ZM9.74316 10.6973L16.2666 17.0869C17.2819 15.8665 17.9696 14.431 18.2773 12.8721C18.6466 11.026 18.4615 9.1283 17.7334 7.38477C17.0052 5.64118 15.7948 4.17457 14.2461 3.13867C12.8922 2.23611 11.3534 1.69241 9.74316 1.56934V10.6973Z" fill="${colors.contentTertiary}"/></g></svg>`,
+  fnoDef: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="loyalty-card"><g id="elements"><path id="Icon" d="M20 2.75C21.5188 2.75 22.75 3.98122 22.75 5.5V18.5C22.75 20.0188 21.5188 21.25 20 21.25H4C2.48122 21.25 1.25 20.0188 1.25 18.5V5.5C1.25 3.98122 2.48122 2.75 4 2.75H20ZM4 4.25C3.30964 4.25 2.75 4.80964 2.75 5.5V18.5C2.75 19.1904 3.30964 19.75 4 19.75H20C20.6904 19.75 21.25 19.1904 21.25 18.5V5.5C21.25 4.80964 20.6904 4.25 20 4.25H4Z" fill="${colors.contentTertiary}"/></g><path id="Vector 9645 (Stroke)" d="M10.6986 7.39359C11.3992 6.57815 12.6632 6.58138 13.3597 7.40043L18.2552 13.1582C18.3026 13.214 18.3724 13.246 18.4456 13.2461H21.9906C22.4045 13.2463 22.7404 13.5822 22.7406 13.9961C22.7406 14.4102 22.4046 14.7459 21.9906 14.7461H18.4456C17.9325 14.746 17.4451 14.5209 17.1126 14.1299L12.2171 8.37211C12.1176 8.25509 11.9364 8.25463 11.8363 8.37113L6.88411 14.1368C6.55166 14.5237 6.0671 14.7461 5.55697 14.7461H2.01986C1.60564 14.7461 1.26986 14.4103 1.26986 13.9961C1.27004 13.5821 1.60576 13.2461 2.01986 13.2461H5.55697C5.62984 13.2461 5.69893 13.2145 5.74642 13.1592L10.6986 7.39359Z" fill="${colors.contentTertiary}"/></g></svg>`,
+  payDef: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="product-icon"><g id="Grid"><path id="Vector 9643 (Stroke)" d="M4.54443 4.42263C4.54443 4.20013 4.81361 4.08803 4.97119 4.2449L11.8452 11.1121C12.3336 11.6002 12.3335 12.3924 11.8452 12.8806L4.97119 19.7537C4.81369 19.9112 4.54443 19.7997 4.54443 19.5769V4.42263ZM3.04443 19.5769C3.04443 21.136 4.93027 21.9176 6.03271 20.8152L12.9058 13.9412C13.9801 12.8669 13.9796 11.1244 12.9048 10.0506L6.03173 3.18435C4.92906 2.08271 3.04443 2.86395 3.04443 4.42263V19.5769Z" fill="${colors.contentTertiary}"/><path id="Vector 9644 (Stroke)" d="M11.7888 9.29177V4.42263C11.7888 4.20013 12.058 4.08803 12.2156 4.2449L19.0896 11.1121C19.578 11.6002 19.5779 12.3924 19.0896 12.8806L12.2156 19.7537C12.0581 19.9112 11.7888 19.7997 11.7888 19.5769V14.8738C11.7888 14.4596 11.453 14.1238 11.0388 14.1238C10.6248 14.124 10.2888 14.4597 10.2888 14.8738V19.5769C10.2888 21.136 12.1747 21.9176 13.2771 20.8152L20.1501 13.9412C21.2244 12.8669 21.224 11.1244 20.1492 10.0506L13.2761 3.18435C12.1734 2.08271 10.2888 2.86395 10.2888 4.42263V9.29177C10.289 9.70571 10.6249 10.0416 11.0388 10.0418C11.4529 10.0418 11.7886 9.70583 11.7888 9.29177Z" fill="${colors.contentTertiary}"/></g></g></svg>`,
+  loansDef: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 21.5 18.5001" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="elements"><path id="Icon" d="M13.7637 0.164293C15.7284 -0.13042 18.3851 -0.13599 21.0576 1.06664C21.3267 1.18775 21.5 1.4551 21.5 1.75023V16.7502C21.5 17.0047 21.3709 17.2419 21.1572 17.3801C20.9435 17.5183 20.6744 17.5382 20.4424 17.4338C18.1149 16.3865 15.7716 16.3799 13.9863 16.6477C13.0963 16.7812 12.3549 16.9818 11.8389 17.1477C11.5812 17.2305 11.3807 17.3046 11.2471 17.3567C11.1806 17.3826 11.1306 17.4028 11.0986 17.4162L11.0576 17.4338C8.38527 18.6362 5.72832 18.6299 3.76367 18.3352C2.77878 18.1874 1.95755 17.9662 1.37988 17.7805C1.09072 17.6876 0.861489 17.6034 0.702148 17.5412C0.622536 17.5102 0.560294 17.4844 0.516602 17.4661C0.494805 17.4569 0.477244 17.45 0.464844 17.4446L0.450195 17.4377L0.445312 17.4358L0.443359 17.4348C0.443092 17.4346 0.445324 17.4273 0.75 16.7502L0.442383 17.4338C0.173256 17.3127 1.49143e-05 17.0453 0 16.7502V1.75023C0 1.49573 0.12906 1.25853 0.342773 1.12035C0.556345 0.982263 0.825645 0.961458 1.05762 1.06566L1.09863 1.08324C1.13062 1.0967 1.18035 1.11777 1.24707 1.14379C1.38069 1.1959 1.5812 1.26995 1.83887 1.35277C2.35493 1.51864 3.0963 1.71829 3.98633 1.85179C5.77157 2.11958 8.1149 2.114 10.4424 1.06664L10.4434 1.06566L10.4453 1.06468L10.4502 1.06273L10.4648 1.05589C10.4772 1.05049 10.4948 1.04359 10.5166 1.03441C10.5603 1.01602 10.6225 0.990271 10.7021 0.959215C10.8615 0.897074 11.0907 0.812906 11.3799 0.719957C11.9576 0.534272 12.7787 0.312036 13.7637 0.164293ZM20 2.2473C17.8203 1.38692 15.6585 1.39689 13.9863 1.64769C13.0963 1.7812 12.3549 1.98182 11.8389 2.14769C11.5812 2.23051 11.3807 2.30456 11.2471 2.35668C11.1806 2.3826 11.1306 2.40278 11.0986 2.41625L11.0645 2.43089L11.0576 2.4348C8.38526 3.63723 5.72832 3.62989 3.76367 3.33519C2.84518 3.19741 2.069 2.9958 1.5 2.81859V16.2375C1.59822 16.2726 1.71156 16.3118 1.83887 16.3528C2.35493 16.5186 3.0963 16.7183 3.98633 16.8518C5.77157 17.1196 8.1149 17.114 10.4424 16.0666L10.75 16.7502C10.4477 16.0786 10.4432 16.066 10.4434 16.0657L10.4453 16.0647L10.4502 16.0627L10.4648 16.0559C10.4772 16.0505 10.4948 16.0436 10.5166 16.0344C10.5603 16.016 10.6225 15.9903 10.7021 15.9592C10.8615 15.8971 11.0907 15.8129 11.3799 15.72C11.9576 15.5343 12.7787 15.312 13.7637 15.1643C15.4686 14.9085 17.6948 14.8705 20 15.6506V2.2473ZM10.75 6.00023C12.5449 6.00023 14 7.45531 14 9.25023C14 11.0452 12.5449 12.5002 10.75 12.5002C8.95507 12.5002 7.5 11.0452 7.5 9.25023C7.5 7.45531 8.95507 6.00023 10.75 6.00023ZM10.75 7.50023C9.7835 7.50023 9 8.28373 9 9.25023C9 10.2167 9.7835 11.0002 10.75 11.0002C11.7165 11.0002 12.5 10.2167 12.5 9.25023C12.5 8.28373 11.7165 7.50023 10.75 7.50023ZM3.85742 9.37035C4.16399 9.41474 4.47991 9.44836 4.80273 9.47093C5.21578 9.5 5.52694 9.85862 5.49805 10.2717C5.46893 10.6845 5.1111 10.9957 4.69824 10.967C4.33901 10.9419 3.98624 10.9045 3.64258 10.8547C3.23279 10.7954 2.94873 10.4149 3.00781 10.0051C3.06717 9.59521 3.44752 9.31104 3.85742 9.37035ZM16.8027 7.54027C17.1618 7.56539 17.5139 7.60284 17.8574 7.65257C18.2672 7.71192 18.5513 8.0924 18.4922 8.50218C18.4328 8.91212 18.0525 9.19631 17.6426 9.13695C17.3362 9.09258 17.0209 9.05894 16.6982 9.03636C16.285 9.00747 15.9731 8.64879 16.002 8.23558C16.0311 7.82259 16.3897 7.51138 16.8027 7.54027Z" fill="${colors.contentTertiary}"/></g></svg>`,
+  stocksSel: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 20.5 20.5" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="elements"><path id="Icon" d="M17.75 0C19.2688 0 20.5 1.23122 20.5 2.75V17.75C20.5 19.2688 19.2688 20.5 17.75 20.5H2.75C1.23122 20.5 0 19.2688 0 17.75V2.75C1.28853e-07 1.23122 1.23122 1.28851e-07 2.75 0H17.75ZM2.75 1.5C2.05964 1.5 1.5 2.05964 1.5 2.75V17.75C1.5 18.4404 2.05964 19 2.75 19H17.75C18.4404 19 19 18.4404 19 17.75V2.75C19 2.05964 18.4404 1.5 17.75 1.5H2.75ZM14.7197 7.71973C15.0126 7.42683 15.4874 7.42683 15.7803 7.71973C16.0732 8.01262 16.0732 8.48738 15.7803 8.78027L12.9873 11.5732C12.3039 12.2566 11.1961 12.2566 10.5127 11.5732L8.92676 9.9873C8.82915 9.88977 8.67085 9.88977 8.57324 9.9873L5.78027 12.7803C5.48738 13.0732 5.01262 13.0732 4.71973 12.7803C4.42683 12.4874 4.42683 12.0126 4.71973 11.7197L7.5127 8.92676C8.19609 8.24344 9.30391 8.24344 9.9873 8.92676L11.5732 10.5127C11.6709 10.6102 11.8291 10.6102 11.9268 10.5127L14.7197 7.71973Z" fill="${colors.backgroundAccentSecondary}"/></g></svg>`,
+  mfSel: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 20.0005 20" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="elements"><path id="Icon" d="M5.8457 2.61523C6.2457 2.47164 6.68746 2.66641 6.83105 3.06641C6.97452 3.46624 6.77957 3.90705 6.37988 4.05078C3.48758 5.1277 1.53809 7.92795 1.53809 11.0254C1.5381 15.1279 4.87205 18.4609 8.97461 18.4609C9.9282 18.4609 10.8716 18.2768 11.7637 17.918C12.1534 17.7641 12.6049 17.9486 12.7588 18.3486C12.9125 18.7383 12.7281 19.1899 12.3281 19.3438C11.2513 19.7745 10.1228 19.9893 8.96387 19.9893L8.97461 20C4.03103 20 1.08496e-05 15.9792 0 11.0254C0 7.29221 2.3485 3.90766 5.8457 2.61523ZM8.97461 0C11.1591 5.13458e-05 13.2721 0.646237 15.0977 1.85645C16.913 3.05644 18.3182 4.76909 19.1592 6.7998C20.0002 8.82023 20.2149 11.0254 19.7842 13.1689C19.3637 15.2715 18.3485 17.1998 16.8408 18.7383C16.6973 18.8818 16.5028 18.9643 16.2979 18.9746C16.0927 18.9746 15.9073 18.8921 15.7637 18.7588L8.44141 11.5791C8.29783 11.4355 8.20508 11.2408 8.20508 11.0254V0.769531C8.20508 0.349018 8.5541 0 8.97461 0ZM9.74316 10.6973L16.2666 17.0869C17.2819 15.8665 17.9696 14.431 18.2773 12.8721C18.6466 11.026 18.4615 9.1283 17.7334 7.38477C17.0052 5.64118 15.7948 4.17457 14.2461 3.13867C12.8922 2.23611 11.3534 1.69241 9.74316 1.56934V10.6973Z" fill="${colors.backgroundAccentSecondary}"/><path id="Icon_2" opacity="0.2" d="M9.7436 10.6974L16.2667 17.0871C17.2821 15.8666 17.9692 14.4308 18.2769 12.8718C18.6462 11.0257 18.4616 9.12816 17.7334 7.38457C17.0051 5.64098 15.7949 4.17442 14.2462 3.13852C12.8923 2.23596 11.3539 1.69234 9.7436 1.56926V10.6974Z" fill="${colors.backgroundAccentSecondary}"/></g></svg>`,
+  fnoSel: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="loyalty-card"><g id="elements"><path id="Icon" d="M20 2.75C21.5188 2.75 22.75 3.98122 22.75 5.5V18.5C22.75 20.0188 21.5188 21.25 20 21.25H4C2.48122 21.25 1.25 20.0188 1.25 18.5V5.5C1.25 3.98122 2.48122 2.75 4 2.75H20ZM4 4.25C3.30964 4.25 2.75 4.80964 2.75 5.5V18.5C2.75 19.1904 3.30964 19.75 4 19.75H20C20.6904 19.75 21.25 19.1904 21.25 18.5V5.5C21.25 4.80964 20.6904 4.25 20 4.25H4Z" fill="${colors.backgroundAccentSecondary}"/></g><path id="Vector 9645 (Stroke)" d="M10.6986 7.39359C11.3992 6.57815 12.6632 6.58138 13.3597 7.40043L18.2552 13.1582C18.3026 13.214 18.3724 13.246 18.4456 13.2461H21.9906C22.4045 13.2463 22.7404 13.5822 22.7406 13.9961C22.7406 14.4102 22.4046 14.7459 21.9906 14.7461H18.4456C17.9325 14.746 17.4451 14.5209 17.1126 14.1299L12.2171 8.37211C12.1176 8.25509 11.9364 8.25463 11.8363 8.37113L6.88411 14.1368C6.55166 14.5237 6.0671 14.7461 5.55697 14.7461H2.01986C1.60564 14.7461 1.26986 14.4103 1.26986 13.9961C1.27004 13.5821 1.60576 13.2461 2.01986 13.2461H5.55697C5.62984 13.2461 5.69893 13.2145 5.74642 13.1592L10.6986 7.39359Z" fill="${colors.backgroundAccentSecondary}"/><path id="Union" opacity="0.2" fill-rule="evenodd" clip-rule="evenodd" d="M4 4.25C3.30964 4.25 2.75 4.80964 2.75 5.5V13.2461H5.55762C5.63031 13.246 5.69968 13.2143 5.74707 13.1592L10.6992 7.39355C11.3999 6.57844 12.664 6.58146 13.3604 7.40039L18.2559 13.1582C18.3033 13.2139 18.3731 13.246 18.4463 13.2461H21.25V5.5C21.25 4.80964 20.6904 4.25 20 4.25H4Z" fill="${colors.backgroundAccentSecondary}"/></g></svg>`,
+  paySel: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="product-icon"><g id="Grid"><path id="Vector 9643 (Stroke)" d="M4.54443 4.42263C4.54443 4.20013 4.81361 4.08803 4.97119 4.2449L11.8452 11.1121C12.3336 11.6002 12.3335 12.3924 11.8452 12.8806L4.97119 19.7537C4.81369 19.9112 4.54443 19.7997 4.54443 19.5769V4.42263ZM3.04443 19.5769C3.04443 21.136 4.93027 21.9176 6.03271 20.8152L12.9058 13.9412C13.9801 12.8669 13.9796 11.1244 12.9048 10.0506L6.03173 3.18435C4.92906 2.08271 3.04443 2.86395 3.04443 4.42263V19.5769Z" fill="${colors.backgroundAccentSecondary}"/><path id="Vector 9643 (Stroke)_2" opacity="0.2" d="M4.54467 4.42265C4.54467 4.20014 4.81385 4.08805 4.97143 4.24491L11.8455 11.1121C12.3339 11.6002 12.3337 12.3924 11.8455 12.8807L4.97143 19.7537C4.81393 19.9112 4.54467 19.7997 4.54467 19.5769V4.42265Z" fill="${colors.backgroundAccentSecondary}"/><path id="Vector 9644 (Stroke)" d="M11.7888 9.29177V4.42263C11.7888 4.20013 12.058 4.08803 12.2156 4.2449L19.0896 11.1121C19.578 11.6002 19.5779 12.3924 19.0896 12.8806L12.2156 19.7537C12.0581 19.9112 11.7888 19.7997 11.7888 19.5769V14.8738C11.7888 14.4596 11.453 14.1238 11.0388 14.1238C10.6248 14.124 10.2888 14.4597 10.2888 14.8738V19.5769C10.2888 21.136 12.1747 21.9176 13.2771 20.8152L20.1501 13.9412C21.2244 12.8669 21.224 11.1244 20.1492 10.0506L13.2761 3.18435C12.1734 2.08271 10.2888 2.86395 10.2888 4.42263V9.29177C10.289 9.70571 10.6249 10.0416 11.0388 10.0418C11.4529 10.0418 11.7886 9.70583 11.7888 9.29177Z" fill="${colors.backgroundAccentSecondary}"/></g></g></svg>`,
+  loansSel: `<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 21.5 18.5001" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="elements"><path id="Vector" opacity="0.2" fill-rule="evenodd" clip-rule="evenodd" d="M11.0573 2.43433L11.0641 2.43137L11.0984 2.41672C11.1304 2.40326 11.1803 2.38269 11.2471 2.35665C11.3807 2.30454 11.5812 2.23063 11.8389 2.14781C12.3549 1.98193 13.0962 1.78165 13.9863 1.64814C15.6584 1.39732 17.8202 1.38705 20 2.24748V15.6505C17.6948 14.8704 15.4687 14.909 13.7637 15.1647C12.7788 15.3125 11.9576 15.5341 11.3799 15.7198C11.0907 15.8127 10.8614 15.897 10.7021 15.9592C10.6224 15.9902 10.5601 16.0158 10.5164 16.0342C10.4945 16.0434 10.4773 16.0508 10.4649 16.0562L10.4499 16.0628L10.4452 16.0649L10.4435 16.0657C10.4435 16.0657 10.4422 16.0663 10.75 16.7502L10.4422 16.0663C8.11473 17.1136 5.7715 17.12 3.98626 16.8522C3.09621 16.7187 2.35494 16.5185 1.83888 16.3526C1.71157 16.3117 1.59822 16.2729 1.5 16.2379V2.81863C2.06903 2.99585 2.84519 3.19786 3.76374 3.33564C5.72839 3.63034 8.38497 3.63676 11.0573 2.43433Z" fill="${colors.backgroundAccentSecondary}"/><path id="Icon" d="M13.7637 0.164293C15.7284 -0.13042 18.3851 -0.13599 21.0576 1.06664C21.3267 1.18775 21.5 1.4551 21.5 1.75023V16.7502C21.5 17.0047 21.3709 17.2419 21.1572 17.3801C20.9435 17.5183 20.6744 17.5382 20.4424 17.4338C18.1149 16.3865 15.7716 16.3799 13.9863 16.6477C13.0963 16.7812 12.3549 16.9818 11.8389 17.1477C11.5812 17.2305 11.3807 17.3046 11.2471 17.3567C11.1806 17.3826 11.1306 17.4028 11.0986 17.4162L11.0576 17.4338C8.38527 18.6362 5.72832 18.6299 3.76367 18.3352C2.77878 18.1874 1.95755 17.9662 1.37988 17.7805C1.09072 17.6876 0.861489 17.6034 0.702148 17.5412C0.622536 17.5102 0.560294 17.4844 0.516602 17.4661C0.494805 17.4569 0.477244 17.45 0.464844 17.4446L0.450195 17.4377L0.445312 17.4358L0.443359 17.4348C0.443092 17.4346 0.445324 17.4273 0.75 16.7502L0.442383 17.4338C0.173256 17.3127 1.49143e-05 17.0453 0 16.7502V1.75023C0 1.49573 0.12906 1.25853 0.342773 1.12035C0.556345 0.982263 0.825645 0.961458 1.05762 1.06566L1.09863 1.08324C1.13062 1.0967 1.18035 1.11777 1.24707 1.14379C1.38069 1.1959 1.5812 1.26995 1.83887 1.35277C2.35493 1.51864 3.0963 1.71829 3.98633 1.85179C5.77157 2.11958 8.1149 2.114 10.4424 1.06664L10.4434 1.06566L10.4453 1.06468L10.4502 1.06273L10.4648 1.05589C10.4772 1.05049 10.4948 1.04359 10.5166 1.03441C10.5603 1.01602 10.6225 0.990271 10.7021 0.959215C10.8615 0.897074 11.0907 0.812906 11.3799 0.719957C11.9576 0.534272 12.7787 0.312036 13.7637 0.164293ZM20 2.2473C17.8203 1.38692 15.6585 1.39689 13.9863 1.64769C13.0963 1.7812 12.3549 1.98182 11.8389 2.14769C11.5812 2.23051 11.3807 2.30456 11.2471 2.35668C11.1806 2.3826 11.1306 2.40278 11.0986 2.41625L11.0645 2.43089L11.0576 2.4348C8.38526 3.63723 5.72832 3.62989 3.76367 3.33519C2.84518 3.19741 2.069 2.9958 1.5 2.81859V16.2375C1.59822 16.2726 1.71156 16.3118 1.83887 16.3528C2.35493 16.5186 3.0963 16.7183 3.98633 16.8518C5.77157 17.1196 8.1149 17.114 10.4424 16.0666L10.75 16.7502C10.4477 16.0786 10.4432 16.066 10.4434 16.0657L10.4453 16.0647L10.4502 16.0627L10.4648 16.0559C10.4772 16.0505 10.4948 16.0436 10.5166 16.0344C10.5603 16.016 10.6225 15.9903 10.7021 15.9592C10.8615 15.8971 11.0907 15.8129 11.3799 15.72C11.9576 15.5343 12.7787 15.312 13.7637 15.1643C15.4686 14.9085 17.6948 14.8705 20 15.6506V2.2473ZM10.75 6.00023C12.5449 6.00023 14 7.45531 14 9.25023C14 11.0452 12.5449 12.5002 10.75 12.5002C8.95507 12.5002 7.5 11.0452 7.5 9.25023C7.5 7.45531 8.95507 6.00023 10.75 6.00023ZM10.75 7.50023C9.7835 7.50023 9 8.28373 9 9.25023C9 10.2167 9.7835 11.0002 10.75 11.0002C11.7165 11.0002 12.5 10.2167 12.5 9.25023C12.5 8.28373 11.7165 7.50023 10.75 7.50023ZM3.85742 9.37035C4.16399 9.41474 4.47991 9.44836 4.80273 9.47093C5.21578 9.5 5.52694 9.85862 5.49805 10.2717C5.46893 10.6845 5.1111 10.9957 4.69824 10.967C4.33901 10.9419 3.98624 10.9045 3.64258 10.8547C3.23279 10.7954 2.94873 10.4149 3.00781 10.0051C3.06717 9.59521 3.44752 9.31104 3.85742 9.37035ZM16.8027 7.54027C17.1618 7.56539 17.5139 7.60284 17.8574 7.65257C18.2672 7.71192 18.5513 8.0924 18.4922 8.50218C18.4328 8.91212 18.0525 9.19631 17.6426 9.13695C17.3362 9.09258 17.0209 9.05894 16.6982 9.03636C16.285 9.00747 15.9731 8.64879 16.002 8.23558C16.0311 7.82259 16.3897 7.51138 16.8027 7.54027Z" fill="${colors.backgroundAccentSecondary}"/></g></svg>`,
+};
+
+const NAV_ITEMS = [
+  { label: 'Stocks',       svg: NAV_SVG.stocksDef, svgSel: NAV_SVG.stocksSel, active: true  },
+  { label: 'Mutual Funds', svg: NAV_SVG.mfDef,     svgSel: NAV_SVG.mfSel,    active: false },
+  { label: 'F&O',          svg: NAV_SVG.fnoDef,    svgSel: NAV_SVG.fnoSel,   active: false },
+  { label: 'Pay',          svg: NAV_SVG.payDef,    svgSel: NAV_SVG.paySel,   active: false },
+  { label: 'Loans',        svg: NAV_SVG.loansDef,  svgSel: NAV_SVG.loansSel, active: false },
+];
+
+// ─── Sparkle / AI icon ────────────────────────────────────────────────────────
+function SparkleIcon({ size = 24 }: { size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M12 2L13.5 9.5L21 11L13.5 12.5L12 20L10.5 12.5L3 11L10.5 9.5L12 2Z"
+        fill={colors.contentPrimary} opacity={0.85} />
+      <Path d="M18 2L18.75 5.25L22 6L18.75 6.75L18 10L17.25 6.75L14 6L17.25 5.25L18 2Z"
+        fill={colors.contentPrimary} opacity={0.5} />
+    </Svg>
+  );
+}
+
+
+// ─── StockLogo: DS CDN image with text-avatar fallback ───────────────────────
+function StockLogo({ logo, ticker, size = 32 }: {
+  logo: string | null | ReturnType<typeof require>;
+  ticker: string;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  const radius = 8;
+  const initials = ticker.slice(0, 2).toUpperCase();
+
+  if (logo && !failed) {
+    const src = typeof logo === 'string' ? { uri: logo } : logo;
+    return (
+      <Image
+        source={src}
+        style={{ width: size, height: size, borderRadius: radius }}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <View style={{ width: size, height: size, borderRadius: radius,
+      backgroundColor: colors.backgroundTertiary, alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{ fontFamily: F.medium, fontSize: size * 0.34, lineHeight: size * 0.4,
+        color: colors.contentSecondary }}>{initials}</Text>
+    </View>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function ChangeTag({ change, positive }: { change: string; positive: boolean }) {
+  return (
+    <View style={[styles.changeTag, { backgroundColor: positive ? colors.backgroundAccentSubtle : colors.backgroundNegativeSubtle }]}>
+      <Text style={[styles.changeTagText, { color: positive ? colors.contentPositive : colors.contentNegative }]}>
+        {change}
+      </Text>
+    </View>
+  );
+}
+
+function SipFailedCard() {
+  return (
+    <View style={styles.sipCard}>
+      <View style={styles.sipCardHeader}>
+        <Text style={styles.sipEyebrow}>YOUR SIP FAILED</Text>
+        <View style={styles.sipMoreBtn}>
+          <Text style={styles.sipMoreDots}>···</Text>
+        </View>
+      </View>
+      <View style={styles.sipRow}>
+        <View style={styles.sipLogoWrap}>
+          {ASSETS.motilalLogo && <Image source={{ uri: ASSETS.motilalLogo }} style={styles.sipLogo} resizeMode="contain" />}
+        </View>
+        <View style={styles.sipTextWrap}>
+          <Text style={styles.sipFundName} numberOfLines={1}>Motilal-NASDAQ 100 ETF</Text>
+          <Text style={styles.sipAmount}>₹5,000</Text>
+        </View>
+        <TouchableOpacity style={styles.payNowBtn} activeOpacity={0.85}>
+          <Text style={styles.payNowLabel}>Pay now</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+function RecentlyViewedSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  return (
+    <View style={[styles.section, { paddingTop: 24 }]}>
+      <Text style={styles.sectionTitle}>Recently viewed</Text>
+      <View style={styles.watchlistRow}>
+        {WATCHLIST_STOCKS.map((s) => {
+          const q = quotes[s.config.symbol];
+          const pct = q ? `${q.changePct >= 0 ? '+' : ''}${q.changePct.toFixed(2)}%` : s.change;
+          const pos = q ? q.changePct >= 0 : s.positive;
+          return (
+            <TouchableOpacity key={s.ticker} style={styles.watchlistItem} onPress={() => onStockPress(s.config)} activeOpacity={0.7}>
+              <View style={styles.companyAvatar}>
+                <StockLogo logo={s.logo} ticker={s.ticker} size={32} />
+              </View>
+              <View style={styles.watchlistTextGroup}>
+                <Text style={styles.tickerLabel}>{s.ticker}</Text>
+                <Text style={[styles.changeLabel, { color: pos ? colors.contentPositive : colors.contentNegative }]}>
+                  {pct}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function StockCard({ item, quote, onPress }: {
+  item: (typeof MOST_TRADED)[0];
+  quote?: Quote;
+  onPress: (cfg: StockConfig) => void;
+}) {
+  const price  = quote
+    ? `₹${quote.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : item.price;
+  const pos    = quote ? quote.change >= 0 : item.positive;
+  const change = quote
+    ? `${quote.change >= 0 ? '+' : ''}₹${Math.abs(quote.change).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${Math.abs(quote.changePct).toFixed(2)}%)`
+    : item.change;
+
+  return (
+    <TouchableOpacity style={styles.stockCard} onPress={() => onPress(item.config)} activeOpacity={0.85}>
+      <View style={styles.stockCardTop}>
+        <View style={styles.companyAvatarSm}>
+          <StockLogo logo={item.logo} ticker={item.ticker} size={32} />
+        </View>
+        <Text style={styles.stockName} numberOfLines={1}>{item.name}</Text>
+      </View>
+      <View style={styles.stockCardBottom}>
+        <Text style={styles.stockPrice}>{price}</Text>
+        <Text style={[styles.stockChange, { color: pos ? colors.contentPositive : colors.contentNegative }]}>
+          {change}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function SeeMoreCard() {
+  return (
+    <View style={[styles.stockCard, styles.seeMoreCard]}>
+      <View style={styles.moreLogosGrid}>
+        {MORE_LOGOS.map((uri, i) => (
+          <View key={i} style={styles.moreLogoItem}>
+            <StockLogo logo={uri} ticker={uri.split('/').pop()?.replace('.png','') ?? '??'} size={32} />
+          </View>
+        ))}
+      </View>
+      <TouchableOpacity style={styles.seeMoreBtn} activeOpacity={0.8}>
+        <Text style={styles.seeMoreText}>See more</Text>
+        <Text style={styles.seeMoreChevron}>›</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function MostTradedSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Most traded on Groww</Text>
+      <View style={styles.stockGrid}>
+        {MOST_TRADED.map((item) => (
+          <StockCard key={item.name} item={item} quote={quotes[item.config.symbol]} onPress={onStockPress} />
+        ))}
+        <SeeMoreCard />
+      </View>
+    </View>
+  );
+}
+
+// ─── Unfold-more icon (up + down chevrons) ────────────────────────────────────
+function UnfoldMoreIcon() {
+  return (
+    <Svg width={16} height={16} viewBox="0 0 16 16" fill="none">
+      <Path d="M5 6.5L8 3.5L11 6.5" stroke={colors.contentPrimary} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M5 9.5L8 12.5L11 9.5" stroke={colors.contentPrimary} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function TopMoversSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  const [activePill, setActivePill] = useState<'gainers' | 'losers'>('gainers');
+
+  return (
+    <View style={styles.section}>
+      {/* Header — canonical spacing per stocks-PP: title → chips = 12, chips → grid = 16. */}
+      <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Top movers today</Text>
+
+      {/* Filter pills */}
+      <View style={styles.moversFilters}>
+        <View style={styles.moversFilterGroup}>
+          <TouchableOpacity
+            style={[styles.moversPill, activePill === 'gainers' && styles.moversPillSelected]}
+            onPress={() => setActivePill('gainers')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.moversPillLabel}>Gainers</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.moversPill, activePill === 'losers' && styles.moversPillSelected]}
+            onPress={() => setActivePill('losers')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.moversPillLabel}>Losers</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.moversVertDivider} />
+
+        <TouchableOpacity style={[styles.moversPill, styles.moversPillSelected, styles.moversPillCap]} activeOpacity={0.7}>
+          <Text style={styles.moversPillLabel}>Large cap</Text>
+          <UnfoldMoreIcon />
+        </TouchableOpacity>
+      </View>
+
+      {/* 2×2 stock grid */}
+      <View style={[styles.stockGrid, { marginTop: 16 }]}>
+        {TOP_MOVERS_STOCKS.map((item) => {
+          const q = quotes[item.config.symbol];
+          const price  = q ? `₹${q.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : item.price;
+          const pos    = q ? q.change >= 0 : item.positive;
+          const change = q
+            ? `${q.change >= 0 ? '+' : ''}₹${Math.abs(q.change).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${Math.abs(q.changePct).toFixed(2)}%)`
+            : item.change;
+          return (
+            <TouchableOpacity key={item.name} style={styles.stockCard} onPress={() => onStockPress(item.config)} activeOpacity={0.85}>
+              <View style={styles.stockCardTop}>
+                <View style={styles.companyAvatarSm}>
+                  <StockLogo logo={item.logo} ticker={item.ticker} size={32} />
+                </View>
+                <Text style={styles.stockName} numberOfLines={1} ellipsizeMode="tail">{item.name}</Text>
+              </View>
+              <View style={styles.stockCardBottom}>
+                <Text style={styles.stockPrice}>{price}</Text>
+                <Text style={[styles.stockChange, { color: pos ? colors.contentPositive : colors.contentNegative }]}>
+                  {change}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+
+        {/* See more card */}
+        <View style={[styles.stockCard, styles.seeMoreCard]}>
+          <View style={styles.moreLogosGrid}>
+            {TOP_MOVERS_MORE_LOGOS.map((uri, i) => (
+              <View key={i} style={styles.moreLogoItem}>
+                <StockLogo logo={uri} ticker={uri ? uri.split('/').pop()?.replace('.png','') ?? '??' : '??'} size={32} />
+              </View>
+            ))}
+          </View>
+          <TouchableOpacity style={styles.seeMoreBtn} activeOpacity={0.8}>
+            <Text style={styles.seeMoreText}>See more</Text>
+            <Text style={styles.seeMoreChevron}>›</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ToolIllustration({ name }: { name: ToolName }) {
+  // Outer frame is 48×48 (per Figma section block); inner icon glyph is 32×32
+  // (Figma wraps each glyph in `size-[32px]` with `px-[2px] py-[4px]` padding).
+  return (
+    <View style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+      {(name === 'Screener' || name === 'Events') && (
+        <Image source={TOOL_ILLUS[name]} style={{ width: 32, height: 32 }} resizeMode="contain" />
+      )}
+
+      {name === 'IPO' && (
+        <View style={{ width: 32, height: 32 }}>
+          <Image source={TOOL_ILLUS.IPO} style={{ width: 32, height: 32 }} resizeMode="contain" />
+          <View style={styles.toolIpoBadge}>
+            <Text style={styles.toolIpoBadgeText}>2</Text>
+          </View>
+        </View>
+      )}
+
+      {name === 'ETF' && (
+        // ETF glyph is two image groups inside a 48×48 inner frame in Figma.
+        // Render at 32×32 visible size (scale source coords 32/48 = 0.667).
+        <View style={{ width: 32, height: 32 }}>
+          <Image source={TOOL_ILLUS.etfB} style={{ position: 'absolute', left: 4, top: 4.07, width: 22.73, height: 13.20 }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.etfA} style={{ position: 'absolute', left: 6.07, top: 12.80, width: 22.73, height: 13.27 }} resizeMode="stretch" />
+        </View>
+      )}
+
+      {name === 'Bonds' && (
+        // Bonds glyph (~37.7×31 in 48×48 frame) → scale 32/48 = 0.667 to fit a 32px glyph.
+        <View style={{ width: 25.13, height: 20.68 }}>
+          <Image source={TOOL_ILLUS.bondsV2} style={{ position: 'absolute', left: 3.51,  top: 0,     width: 17.02, height: 20.68 }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV0} style={{ position: 'absolute', left: 0,     top: 0.03,  width: 11.87, height: 4.40  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV6} style={{ position: 'absolute', left: 3.41,  top: 0.03,  width: 3.51,  height: 3.68  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV1} style={{ position: 'absolute', left: 1.70,  top: 2.62,  width: 7.16,  height: 1.81  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV7} style={{ position: 'absolute', left: 4.94,  top: 3.71,  width: 1.98,  height: 4.41  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV8} style={{ position: 'absolute', left: 4.94,  top: 8.13,  width: 1.98,  height: 4.41  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV9} style={{ position: 'absolute', left: 4.94,  top: 12.54, width: 1.98,  height: 4.41  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV4} style={{ position: 'absolute', left: 4.94,  top: 16.96, width: 4.05,  height: 3.68  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV5} style={{ position: 'absolute', left: 7.55,  top: 16.75, width: 5.01,  height: 3.93  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsV3} style={{ position: 'absolute', left: 9.63,  top: 16.75, width: 15.49, height: 3.93  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsG2} style={{ position: 'absolute', left: 9.29,  top: 9.03,  width: 8.61,  height: 5.71  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsG3} style={{ position: 'absolute', left: 10.72, top: 1.85,  width: 5.76,  height: 5.76  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsG4} style={{ position: 'absolute', left: 11.66, top: 3.09,  width: 1.50,  height: 3.27  }} resizeMode="stretch" />
+          <Image source={TOOL_ILLUS.bondsG5} style={{ position: 'absolute', left: 14.04, top: 3.09,  width: 1.50,  height: 3.27  }} resizeMode="stretch" />
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── Most traded in MTF ───────────────────────────────────────────────────────
+function MtfSeeMoreCard() {
+  return (
+    <View style={[styles.stockCard, styles.seeMoreCard]}>
+      <View style={styles.moreLogosGrid}>
+        {MTF_MORE_LOGOS.map((uri, i) => (
+          <View key={i} style={styles.moreLogoItem}>
+            <StockLogo logo={uri} ticker={uri.split('/').pop()?.replace('.png','') ?? '??'} size={32} />
+          </View>
+        ))}
+      </View>
+      <TouchableOpacity style={styles.seeMoreBtn} activeOpacity={0.8}>
+        <Text style={styles.seeMoreText}>See more</Text>
+        <Text style={styles.seeMoreChevron}>›</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function MostTradedMtfSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Most traded in MTF</Text>
+      <View style={styles.stockGrid}>
+        {MTF_STOCKS.map((item) => (
+          <StockCard key={item.name} item={item} quote={quotes[item.config.symbol]} onPress={onStockPress} />
+        ))}
+        <MtfSeeMoreCard />
+      </View>
+    </View>
+  );
+}
+
+// ─── Top Intraday ─────────────────────────────────────────────────────────────
+function TopIntradaySection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.intradayHeader}>
+        <Text style={[styles.sectionTitle, { paddingHorizontal: 0, marginBottom: 0 }]}>Top Intraday</Text>
+        <View style={styles.toolsSeeMore}>
+          <Text style={styles.intradayLink}>Intraday screener</Text>
+          <Text style={styles.toolsSeeMoreChevron}>›</Text>
+        </View>
+      </View>
+      <View style={[styles.stockGrid, { marginTop: 16 }]}>
+        {TOP_INTRADAY_STOCKS.map((item) => (
+          <StockCard key={item.name} item={item} quote={quotes[item.config.symbol]} onPress={onStockPress} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ─── ETF's by Groww ───────────────────────────────────────────────────────────
+function GrowwEtfNfoCard() {
+  return (
+    <View style={styles.stockCard}>
+      <View style={styles.stockCardTop}>
+        <View style={styles.companyAvatarSm}>
+          <StockLogo logo={DSL('GROWW')} ticker="GR" size={32} />
+        </View>
+        <Text style={styles.stockName} numberOfLines={1}>Groww Automative EV ETFs Ltd</Text>
+      </View>
+      <View style={{ gap: 4 }}>
+        <Text style={styles.growwEtfNfoLabel}>NFO</Text>
+        <View style={styles.growwEtfTag}>
+          <Text style={styles.growwEtfTagText}>3 days left</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function GrowwEtfsSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  const second = {
+    name: 'Groww Nifty 50 ETFEV ETFs Ltd', ticker: 'GROWW50', price: '₹456.69',
+    change: '+₹45.60 (3.45%)', positive: true, logo: DSL('GROWW'), config: STOCK_CONFIGS.AXISBANK,
+  };
+  return (
+    <View style={styles.section}>
+      <View style={styles.intradayHeader}>
+        <Text style={[styles.sectionTitle, { paddingHorizontal: 0, marginBottom: 0 }]}>ETFs by Groww</Text>
+        <View style={styles.toolsSeeMore}>
+          <Text style={styles.intradayLink}>See more</Text>
+          <Text style={styles.toolsSeeMoreChevron}>›</Text>
+        </View>
+      </View>
+      <View style={[styles.stockGrid, { marginTop: 16 }]}>
+        <GrowwEtfNfoCard />
+        <StockCard item={second} quote={quotes[second.config.symbol]} onPress={onStockPress} />
+      </View>
+    </View>
+  );
+}
+
+// ─── Stocks in news ───────────────────────────────────────────────────────────
+const STOCKS_IN_NEWS = [
+  { name: 'Ambuja Cements Ltd', ticker: 'AMBUJACEM', price: '₹1,1773.21', change: '-₹10.80 (0.56%)', positive: false, logo: DSL('AMBUJACEM'), config: STOCK_CONFIGS.SBIN     },
+  { name: 'Hero MotoCorp Ltd',  ticker: 'HEROMOTOCO', price: '₹1,1773.21', change: '-₹10.80 (0.56%)', positive: false, logo: DSL('HEROMOTOCO'), config: STOCK_CONFIGS.PVRINOX },
+  { name: 'Bosch Ltd',          ticker: 'BOSCHLTD',  price: '₹5,822.09',  change: '+₹89.80 (0.56%)', positive: true,  logo: DSL('BOSCHLTD'),   config: STOCK_CONFIGS.AXISBANK },
+  { name: 'Dabur India Ltd',    ticker: 'DABUR',     price: '₹695.35',    change: '-₹10.80 (0.56%)', positive: false, logo: DSL('DABUR'),      config: STOCK_CONFIGS.ICICIBANK },
+];
+
+function StocksInNewsSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.intradayHeader}>
+        <Text style={[styles.sectionTitle, { paddingHorizontal: 0, marginBottom: 0 }]}>Stocks in news</Text>
+        <View style={styles.toolsSeeMore}>
+          <Text style={styles.intradayLink}>Market news</Text>
+          <Text style={styles.toolsSeeMoreChevron}>›</Text>
+        </View>
+      </View>
+      <View style={[styles.stockGrid, { marginTop: 16 }]}>
+        {STOCKS_IN_NEWS.map((item) => (
+          <StockCard key={item.name} item={item} quote={quotes[item.config.symbol]} onPress={onStockPress} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ─── Volume shockers data ─────────────────────────────────────────────────────
+const VOLUME_SHOCKERS = [
+  { name: 'Agri-Tech (India) Limited', ticker: 'AGRITECH', logo: DSL('AGRITECH'), pct: '+300%', volume: '1,43,43,449' },
+  { name: 'Idea',                      ticker: 'IDEA',     logo: DSL('IDEA'),     pct: '+250%', volume: '1,43,43,449' },
+  { name: 'SAIL',                      ticker: 'SAIL',     logo: DSL('SAIL'),     pct: '+170%', volume: '1,43,43,449' },
+];
+
+function VolumeShockersSection() {
+  return (
+    <View style={styles.volumeSection}>
+      <View style={styles.volumeHeader}>
+        <Text style={styles.volumeTitle}>Volume shockers</Text>
+        <Text style={styles.volumeSubtitle}>Stocks trading above their weekly avg volume</Text>
+      </View>
+      <View style={styles.volumeCardWrap}>
+        <View style={styles.volumeCard}>
+          {VOLUME_SHOCKERS.map((s, i) => (
+            <View key={s.ticker}>
+              <TouchableOpacity style={styles.volumeRow} activeOpacity={0.7}>
+                <View style={styles.companyAvatarSm}>
+                  <StockLogo logo={s.logo} ticker={s.ticker} size={32} />
+                </View>
+                <Text style={styles.volumeName} numberOfLines={1}>{s.name}</Text>
+                <View style={styles.volumeEnd}>
+                  <Text style={styles.volumePct}>{s.pct}</Text>
+                  <Text style={styles.volumeVol}>{s.volume}</Text>
+                </View>
+              </TouchableOpacity>
+              {i < VOLUME_SHOCKERS.length - 1 && (
+                <View style={styles.volumeDividerWrap}>
+                  <View style={styles.volumeDivider} />
+                </View>
+              )}
+            </View>
+          ))}
+          <View style={styles.volumeSeeMore}>
+            <TouchableOpacity style={styles.volumeSeeMoreInner} activeOpacity={0.7}>
+              <Text style={styles.volumeSeeMoreText}>See more</Text>
+              <Text style={styles.volumeSeeMoreChevron}>›</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Most bought ETFs data ────────────────────────────────────────────────────
+const MOST_BOUGHT_ETFS = [
+  { category: 'GOLD',          name: 'Nippon India ETF Gold BeES',  price: '₹101.23', change: '+₹1.57 (1.57%)', positive: true,  badgeBg: '#E21118', badgeFg: '#FFFFFF', initials: 'NI' },
+  { category: 'SILVER',        name: 'Tata Silver Exchange Traded', price: '₹14.70',  change: '+₹0.24 (1.73%)', positive: true,  badgeBg: '#FFFFFF', badgeFg: '#1F4FA8', initials: 'TS' },
+  { category: 'INTERNATIONAL', name: 'Motilal Oswal NASDAQ Most',   price: '₹235.23', change: '+₹1.67 (0.71%)', positive: true,  badgeBg: '#322996', badgeFg: '#FFFFFF', initials: 'MO' },
+  { category: 'NIFTY 50',      name: 'Nippon India ETF Nifty 50 Be',price: '₹10.80',  change: '-₹0.01 (0.09%)', positive: false, badgeBg: '#E21118', badgeFg: '#FFFFFF', initials: 'NI' },
+];
+
+function EtfStackCard({ item }: { item: (typeof MOST_BOUGHT_ETFS)[0] }) {
+  return (
+    <View style={styles.etfStackWrap}>
+      {/* Stacked "deck" hint behind the card */}
+      <View style={[styles.etfDeckLayer, { width: 108, opacity: 0.4 }]} />
+      <View style={[styles.etfDeckLayer, { width: 128, opacity: 0.7 }]} />
+      <TouchableOpacity style={styles.etfCard} activeOpacity={0.85}>
+        <View style={styles.etfCardHeader}>
+          <Text style={styles.etfCategory}>{item.category}</Text>
+          <Text style={styles.etfCategoryChevron}>›</Text>
+        </View>
+        <View style={styles.etfCardBody}>
+          <View style={styles.etfTitleRow}>
+            <Text style={styles.etfName} numberOfLines={2}>{item.name}</Text>
+            <View style={[styles.etfBadge, { backgroundColor: item.badgeBg }]}>
+              <Text style={[styles.etfBadgeText, { color: item.badgeFg }]}>{item.initials}</Text>
+            </View>
+          </View>
+          <View style={styles.etfDataWrap}>
+            <Text style={styles.etfPrice}>{item.price}</Text>
+            <Text style={[styles.etfChange, { color: item.positive ? colors.contentPositive : colors.contentNegative }]}>
+              {item.change}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function MostBoughtEtfsSection() {
+  return (
+    <View style={styles.etfsSection}>
+      <View style={styles.etfsHeader}>
+        <Text style={styles.etfsTitle}>Most bought ETFs</Text>
+        <View style={styles.etfsSeeMore}>
+          <Text style={styles.etfsSeeMoreText}>See more</Text>
+          <Text style={styles.etfsSeeMoreChevron}>›</Text>
+        </View>
+      </View>
+      <View style={styles.etfsBody}>
+        <View style={styles.etfsGrid}>
+          {MOST_BOUGHT_ETFS.map((item) => (
+            <EtfStackCard key={item.category} item={item} />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Trading screens illustrations ────────────────────────────────────────────
+// Simple SVG renditions of the 4 chart-pattern thumbnails (120 × 72).
+function ScreenIllustration({ kind }: { kind: 'breakout' | 'macd' | 'overbought' | 'oversold' }) {
+  const W = 120, H = 72;
+  const grid = colors.borderPrimary;
+  const green = colors.dataVizMintGreen;
+  const greenSubtle = '#B2E7DA';
+  const red = colors.dataVizRed;
+  const redSubtle = '#F8CBC0';
+
+  // Background grid (6 horizontal lines)
+  const gridLines = [0, 1, 2, 3, 4, 5].map((i) => (
+    <Path key={i} d={`M0 ${i * (H / 5) + 2} H${W}`} stroke={grid} strokeWidth={0.5} />
+  ));
+
+  if (kind === 'breakout') {
+    // Sine-like curve with end dot, crossing a horizontal dashed level
+    return (
+      <Svg width={W} height={H}>
+        {gridLines}
+        <Path d={`M2 28 H118`} stroke={grid} strokeDasharray="3 3" strokeWidth={1} />
+        <Path d="M2 50 Q22 12 50 36 T100 28" stroke={green} strokeWidth={2} fill="none" />
+        <Circle cx={100} cy={28} r={4} fill={green} />
+      </Svg>
+    );
+  }
+
+  if (kind === 'macd') {
+    // Bars with two crossing curves
+    const bars = [
+      { x: 6, h: 24, c: greenSubtle }, { x: 16, h: 22, c: greenSubtle },
+      { x: 26, h: 18, c: greenSubtle }, { x: 36, h: 14, c: greenSubtle },
+      { x: 46, h: 10, c: greenSubtle }, { x: 56, h: 8, c: greenSubtle },
+      { x: 72, h: 6, c: redSubtle }, { x: 82, h: 10, c: redSubtle },
+      { x: 92, h: 16, c: redSubtle }, { x: 102, h: 20, c: redSubtle },
+    ];
+    return (
+      <Svg width={W} height={H}>
+        {gridLines}
+        {bars.map((b, i) => (
+          <Rect key={i} x={b.x} y={H - 12 - b.h} width={6} height={b.h} rx={1.5} fill={b.c} />
+        ))}
+        <Path d="M2 50 Q40 30 60 36 T118 18" stroke={green} strokeWidth={1.5} fill="none" />
+        <Path d="M2 38 Q40 50 60 42 T118 30" stroke={red} strokeWidth={1.5} fill="none" />
+      </Svg>
+    );
+  }
+
+  if (kind === 'overbought') {
+    // Tall red bar (peak) with smaller bars; downward-arc dashed line
+    const bars = [
+      { x: 6, h: 16, c: '#E7E8E9' },
+      { x: 26, h: 24, c: '#E7E8E9' },
+      { x: 50, h: 47, c: red },
+      { x: 74, h: 34, c: redSubtle },
+      { x: 96, h: 16, c: redSubtle },
+    ];
+    return (
+      <Svg width={W} height={H}>
+        {gridLines}
+        {bars.map((b, i) => (
+          <Rect key={i} x={b.x} y={H - 8 - b.h} width={13} height={b.h} rx={2} fill={b.c} />
+        ))}
+        <Path d="M2 50 Q30 14 56 14 T118 50" stroke={red} strokeWidth={1.5} fill="none" strokeDasharray="3 3" />
+        <Circle cx={56} cy={14} r={3} fill={colors.backgroundPrimary} stroke={red} strokeWidth={1.5} />
+      </Svg>
+    );
+  }
+
+  // oversold: tall green bar (valley) with smaller bars; upward-arc curve
+  const bars = [
+    { x: 6, h: 32, c: '#E7E8E9' },
+    { x: 26, h: 24, c: '#E7E8E9' },
+    { x: 50, h: 47, c: green },
+    { x: 74, h: 24, c: greenSubtle },
+    { x: 96, h: 16, c: greenSubtle },
+  ];
+  return (
+    <Svg width={W} height={H}>
+      {gridLines}
+      {bars.map((b, i) => (
+        <Rect key={i} x={b.x} y={H - 8 - b.h} width={13} height={b.h} rx={2} fill={b.c} />
+      ))}
+      <Path d="M2 22 Q30 58 56 58 T118 22" stroke={green} strokeWidth={1.5} fill="none" />
+      <Circle cx={56} cy={58} r={3} fill={colors.backgroundPrimary} stroke={green} strokeWidth={1.5} />
+    </Svg>
+  );
+}
+
+function FunnelIcon() {
+  return (
+    <Svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+      <Path d="M3 4h14l-5.2 6.5v5l-3.6 1.5v-6.5L3 4z" stroke={colors.contentPrimary} strokeWidth={1.4} strokeLinejoin="round" fill="none" />
+    </Svg>
+  );
+}
+
+const TRADING_SCREENS = [
+  { key: 'breakout',   tone: 'bullish', label: 'Stocks near breakout' },
+  { key: 'macd',       tone: 'bullish', label: 'MACD above signal line' },
+  { key: 'overbought', tone: 'bearish', label: 'Overbought with high volume' },
+  { key: 'oversold',   tone: 'bullish', label: 'Oversold with high volume' },
+] as const;
+
+function TradingScreensSection() {
+  return (
+    <View style={styles.tradingSection}>
+      <View style={styles.tradingHeader}>
+        <Text style={styles.tradingTitle}>Trading screens</Text>
+      </View>
+      <View style={styles.tradingBody}>
+        <View style={styles.tradingGrid}>
+          {TRADING_SCREENS.map((s) => (
+            <TouchableOpacity key={s.key} style={styles.tradingCard} activeOpacity={0.85}>
+              <View style={[
+                styles.tradingTag,
+                { backgroundColor: s.tone === 'bullish' ? colors.backgroundPositiveSubtle : colors.backgroundNegativeSubtle },
+              ]}>
+                <Text style={[
+                  styles.tradingTagText,
+                  { color: s.tone === 'bullish' ? colors.contentOnPositiveSubtle : colors.contentOnNegativeSubtle },
+                ]}>
+                  {s.tone === 'bullish' ? 'Bullish' : 'Bearish'}
+                </Text>
+              </View>
+              <View style={styles.tradingIllusWrap}>
+                <ScreenIllustration kind={s.key} />
+              </View>
+              <Text style={styles.tradingLabel} numberOfLines={2}>{s.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <TouchableOpacity style={styles.intradayCard} activeOpacity={0.85}>
+          <View style={styles.intradayLeft}>
+            <View style={styles.intradayIconWrap}><FunnelIcon /></View>
+            <Text style={styles.intradayLabel}>Intraday screener</Text>
+          </View>
+          <Text style={styles.intradayChevron}>›</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+// ─── Sectors trending today ───────────────────────────────────────────────────
+function SectorIcon({ kind }: { kind: 'pharma' | 'banks' | 'it' | 'realEstate' }) {
+  const c = colors.contentSecondary;
+  if (kind === 'pharma') {
+    // Medical / first-aid kit
+    return (
+      <Svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+        <Rect x={2.5} y={6} width={15} height={11} rx={2} stroke={c} strokeWidth={1.4} fill="none" />
+        <Path d="M7.5 6V4.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V6" stroke={c} strokeWidth={1.4} fill="none" />
+        <Path d="M10 9v5M7.5 11.5h5" stroke={c} strokeWidth={1.4} strokeLinecap="round" />
+      </Svg>
+    );
+  }
+  if (kind === 'banks') {
+    // Classical bank columns
+    return (
+      <Svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+        <Path d="M2.5 8L10 3l7.5 5" stroke={c} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <Path d="M4 8v7M8 8v7M12 8v7M16 8v7" stroke={c} strokeWidth={1.4} strokeLinecap="round" />
+        <Path d="M2.5 16h15" stroke={c} strokeWidth={1.4} strokeLinecap="round" />
+      </Svg>
+    );
+  }
+  if (kind === 'it') {
+    // Phone / device
+    return (
+      <Svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+        <Rect x={5.5} y={2.5} width={9} height={15} rx={2} stroke={c} strokeWidth={1.4} fill="none" />
+        <Path d="M9 14.5h2" stroke={c} strokeWidth={1.4} strokeLinecap="round" />
+      </Svg>
+    );
+  }
+  // realEstate — building with windows
+  return (
+    <Svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+      <Rect x={3} y={3} width={14} height={14} rx={1.5} stroke={c} strokeWidth={1.4} fill="none" />
+      <Rect x={5.5} y={5.5} width={2} height={2} fill={c} />
+      <Rect x={9} y={5.5} width={2} height={2} fill={c} />
+      <Rect x={12.5} y={5.5} width={2} height={2} fill={c} />
+      <Rect x={5.5} y={9} width={2} height={2} fill={c} />
+      <Rect x={9} y={9} width={2} height={2} fill={c} />
+      <Rect x={12.5} y={9} width={2} height={2} fill={c} />
+      <Rect x={8.5} y={12.5} width={3} height={4.5} fill={c} />
+    </Svg>
+  );
+}
+
+const TRENDING_SECTORS = [
+  { kind: 'pharma' as const,    name: 'Pharma',     pct:  4.60 },
+  { kind: 'banks' as const,     name: 'Banks',      pct:  1.33 },
+  { kind: 'it' as const,        name: 'IT',         pct: -2.30 },
+  { kind: 'realEstate' as const,name: 'Real estate',pct: -3.87 },
+];
+
+const MAX_PCT = 5; // Scale: ±5% maps to a fully filled half (40px).
+
+function SectorBar({ pct }: { pct: number }) {
+  const positive = pct >= 0;
+  const fill = Math.min(Math.abs(pct) / MAX_PCT, 1) * 40; // half-bar is 40px
+  return (
+    <View style={styles.sectorBar}>
+      <View style={styles.sectorBarHalfL}>
+        {!positive && <View style={[styles.sectorBarFillR, { width: fill }]} />}
+      </View>
+      <View style={styles.sectorBarHalfR}>
+        {positive && <View style={[styles.sectorBarFillG, { width: fill }]} />}
+      </View>
+    </View>
+  );
+}
+
+function SectorsTrendingSection() {
+  return (
+    <View style={styles.sectorsSection}>
+      <View style={styles.sectorsHeader}>
+        <Text style={styles.sectorsTitle}>Sectors trending today</Text>
+        <Text style={styles.sectorsSubtitle}>Sectors with the highest price change.</Text>
+      </View>
+      <View style={styles.sectorsCardWrap}>
+        <View style={styles.sectorsCard}>
+          {TRENDING_SECTORS.map((s) => (
+            <View key={s.name} style={styles.sectorRow}>
+              <View style={styles.sectorNameWrap}>
+                <SectorIcon kind={s.kind} />
+                <Text style={styles.sectorName} numberOfLines={1}>{s.name}</Text>
+              </View>
+              <View style={styles.sectorBarWrap}>
+                <SectorBar pct={s.pct} />
+                <Text style={[styles.sectorPct, { color: s.pct >= 0 ? colors.contentPositive : colors.contentNegative }]}>
+                  {s.pct >= 0 ? '+' : ''}{s.pct.toFixed(2)}%
+                </Text>
+              </View>
+            </View>
+          ))}
+          <View style={styles.sectorsSeeMore}>
+            <TouchableOpacity style={styles.sectorsSeeMoreInner} activeOpacity={0.7}>
+              <Text style={styles.sectorsSeeMoreText}>See all sectors</Text>
+              <Text style={styles.sectorsSeeMoreChevron}>›</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ProductsAndToolsSection() {
+  return (
+    <View style={styles.toolsSection}>
+      <View style={styles.toolsHeader}>
+        <Text style={[styles.sectionTitle, { paddingHorizontal: 0, marginBottom: 0 }]}>Products and tools</Text>
+        <View style={styles.toolsSeeMore}>
+          <Text style={styles.toolsSeeMoreText}>See more</Text>
+          <Text style={styles.toolsSeeMoreChevron}>›</Text>
+        </View>
+      </View>
+      <View style={styles.toolsRow}>
+        {TOOLS.map((name) => (
+          <TouchableOpacity key={name} style={styles.toolItem} activeOpacity={0.7}>
+            <ToolIllustration name={name} />
+            <Text style={styles.toolLabel}>{name}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function BottomNav() {
+  return (
+    <View style={styles.bottomNav}>
+      <View style={styles.bottomNavBar}>
+        {NAV_ITEMS.map((item) => (
+          <View key={item.label} style={styles.navTab}>
+            <View style={styles.navIconWrap}>
+              {item.active && <View style={styles.navActiveIndicator} />}
+              <SvgXml xml={item.active ? item.svgSel : item.svg} width={24} height={24} />
+            </View>
+            <Text style={[styles.navLabel, item.active && styles.navLabelActive]}>
+              {item.label}
+            </Text>
+          </View>
+        ))}
+      </View>
+      <View style={styles.homeIndicator} />
+    </View>
+  );
+}
+
+// ─── Main screen ──────────────────────────────────────────────────────────────
+export default function HomePage({ onNavigateToStocks, onNavigateToProfile }: { onNavigateToStocks: (stock: StockConfig) => void; onNavigateToProfile?: () => void }) {
+  const { mode } = useTheme();
+  styles = makeStyles();
+  const [activeTab, setActiveTab] = useState(0);
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const baseRef = useRef<Record<string, Quote>>({});
+  const gr1 = useGR1Sheet();
+
+  // Fetch real prices from Yahoo Finance every 10 s
+  useEffect(() => {
+    const fetchAll = async () => {
+      const results = await Promise.all(
+        ALL_SYMBOLS.map(async (sym) => [sym, await fetchQuote(sym)] as const),
+      );
+      const map: Record<string, Quote> = {};
+      for (const [sym, q] of results) if (q) map[sym] = q;
+      if (Object.keys(map).length > 0) {
+        baseRef.current = map;
+        setQuotes({ ...map });
+      }
+    };
+    fetchAll();
+    const id = setInterval(fetchAll, 10_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+  const fmtPrice = (sym: string, fallback: string) => {
+    const q = quotes[sym];
+    if (!q) return fallback;
+    return `₹${q.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const fmtChangePct = (sym: string, fallback: string) => {
+    const q = quotes[sym];
+    if (!q) return fallback;
+    const sign = q.changePct >= 0 ? '+' : '';
+    return `${sign}${q.changePct.toFixed(2)}%`;
+  };
+
+  const isPositive = (sym: string, fallback: boolean) => {
+    const q = quotes[sym];
+    return q ? q.changePct >= 0 : fallback;
+  };
+
+  const fmtIndexChange = (sym: string, fallback: string) => {
+    const q = quotes[sym];
+    if (!q) return fallback;
+    const sign = q.change >= 0 ? '+' : '';
+    return `${sign}${q.change.toFixed(2)}`;
+  };
+
+  const fmtStockChange = (sym: string, fallback: string) => {
+    const q = quotes[sym];
+    if (!q) return fallback;
+    const sign = q.change >= 0 ? '+' : '';
+    const absPct = Math.abs(q.changePct).toFixed(2);
+    const absChg = Math.abs(q.change).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `${sign}₹${absChg} (${absPct}%)`;
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle={mode === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.backgroundPrimary} />
+
+      {/* Fixed header */}
+      <View style={styles.header}>
+        {/* Search bar row */}
+        <View style={styles.searchBarRow}>
+          <View style={styles.searchBarInner}>
+            {/* Groww logo */}
+            <View style={styles.growwLogoWrap}>
+              <Image source={require('./assets/mds-groww-logo.png')} style={styles.growwLogo} resizeMode="contain" />
+            </View>
+            {/* Title */}
+            <View style={styles.searchTitleWrap}>
+              <Text style={styles.searchTitle}>Stocks</Text>
+            </View>
+            {/* Actions */}
+            <View style={styles.headerActions}>
+              <TouchableOpacity style={styles.actionBtn} activeOpacity={0.7}>
+                <HugeiconsIcon icon={Search01Icon} size={24} color={colors.contentPrimary} strokeWidth={1.5} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.actionBtn} activeOpacity={0.7} onPress={gr1.openSheet}>
+                <GR1Icon size={24} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.profileBtn} activeOpacity={0.8} onPress={onNavigateToProfile}>
+                <Image source={{ uri: ASSETS.profilePic }} style={styles.profilePic} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+
+        {/* Index strip */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.indexStrip}
+          contentContainerStyle={styles.indexStripContent}
+        >
+          {INDICES.map((idx, i) => (
+            <View key={idx.name} style={[styles.indexCard, i > 0 && styles.indexCardGap]}>
+              <Text style={styles.indexName}>{idx.name}</Text>
+              <Text style={styles.indexValue}>{quotes[idx.symbol]
+                ? quotes[idx.symbol].price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                : idx.value}
+              </Text>
+              <ChangeTag
+                change={fmtIndexChange(idx.symbol, idx.change)}
+                positive={isPositive(idx.symbol, idx.positive)}
+              />
+            </View>
+          ))}
+        </ScrollView>
+
+        {/* Tabs bar */}
+        <View style={styles.tabsBarWrap}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsBarContent}>
+            {TABS.map((tab, i) => (
+              <TouchableOpacity key={tab} style={styles.tabItem} onPress={() => setActiveTab(i)} activeOpacity={0.7}>
+                <Text style={[styles.tabLabel, i === activeTab && styles.tabLabelActive]}>{tab}</Text>
+                {i === activeTab && <View style={styles.tabHighlighter} />}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <View style={styles.tabsDivider} />
+        </View>
+      </View>
+
+      {/* Scrollable content */}
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        onScrollBeginDrag={() => {
+          if (!gr1.open) return;
+          if (gr1.mode === 'thinking' || gr1.mode === 'answering') {
+            gr1.toPeek();
+          } else if (gr1.mode === 'suggestions') {
+            gr1.closeSheet();
+          }
+        }}
+      >
+        {/* Recently viewed */}
+        <RecentlyViewedSection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        {/* Most traded */}
+        <MostTradedSection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        {/* Products and tools */}
+        <ProductsAndToolsSection />
+
+        {/* Top movers */}
+        <TopMoversSection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        {/* Most traded in MTF */}
+        <MostTradedMtfSection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        {/* Top Intraday */}
+        <TopIntradaySection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        {/* Volume shockers */}
+        <VolumeShockersSection />
+
+        {/* Trading screens */}
+        <TradingScreensSection />
+
+        {/* Sectors trending today */}
+        <SectorsTrendingSection />
+
+        {/* Most bought ETFs */}
+        <MostBoughtEtfsSection />
+
+        {/* ETF's by Groww */}
+        <GrowwEtfsSection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        {/* Stocks in news */}
+        <StocksInNewsSection onStockPress={onNavigateToStocks} quotes={quotes} />
+
+        <View style={{ height: 16 }} />
+      </ScrollView>
+
+      <BottomNav />
+
+      <GR1Layer state={gr1} />
+    </SafeAreaView>
+  );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const makeStyles = () => StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.backgroundPrimary,
+  },
+
+  // Header
+  header: {
+    backgroundColor: colors.backgroundPrimary,
+  },
+  searchBarRow: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  searchBarInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 48,
+  },
+  growwLogoWrap: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  growwLogo: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  searchTitleWrap: {
+    flex: 1,
+    paddingLeft: 4,
+  },
+  searchTitle: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 18,
+    lineHeight: 28,
+    color: colors.contentPrimary,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  actionBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileBtn: {
+    width: 48,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  profilePic: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+
+  // Index strip
+  indexStrip: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderPrimary,
+  },
+  indexStripContent: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 16,
+  },
+  indexCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  indexCardGap: {},
+  indexName: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  indexValue: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  changeTag: {
+    paddingHorizontal: 6,
+    borderRadius: 4,
+  },
+  changeTagText: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
+  // Tabs bar
+  tabsBarWrap: {
+    position: 'relative',
+  },
+  tabsBarContent: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+  },
+  tabItem: {
+    paddingHorizontal: 0,
+    marginRight: 0,
+    alignItems: 'center',
+    position: 'relative',
+  },
+  tabLabel: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 16,
+    lineHeight: 48,
+    color: colors.contentTertiary,
+    paddingHorizontal: 16,
+  },
+  tabLabelActive: {
+    color: colors.contentPrimary,
+  },
+  tabHighlighter: {
+    position: 'absolute',
+    bottom: 0,
+    left: 16,
+    right: 16,
+    height: 2,
+    backgroundColor: colors.contentPrimary,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+  },
+  tabsDivider: {
+    height: 1,
+    backgroundColor: colors.borderPrimary,
+  },
+
+  // Scroll
+  scrollView: { flex: 1 },
+  scrollContent: { paddingBottom: 16 },
+
+  // Sections
+  cardSection: {
+    paddingHorizontal: 16,
+    paddingTop: 24,
+    paddingBottom: 4,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.borderPrimary,
+    marginVertical: 0,
+  },
+  section: {
+    paddingTop: 16,
+    paddingBottom: 8,
+    backgroundColor: colors.backgroundPrimary,
+  },
+  sectionTitle: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 18,
+    lineHeight: 28,
+    color: colors.contentPrimary,
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+
+  // SIP card
+  sipCard: {
+    backgroundColor: colors.backgroundSurface,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 16,
+    paddingTop: 12,
+    paddingBottom: 16,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  sipCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sipEyebrow: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 10,
+    lineHeight: 12,
+    letterSpacing: 2,
+    color: colors.contentSecondary,
+    textTransform: 'uppercase',
+  },
+  sipMoreBtn: {
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  sipMoreDots: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    color: colors.contentSecondary,
+    letterSpacing: 2,
+  },
+  sipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sipLogoWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 0.8,
+    borderColor: colors.borderPrimary,
+    backgroundColor: colors.backgroundTertiary,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sipLogo: {
+    width: 28,
+    height: 28,
+  },
+  sipTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  sipFundName: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  sipAmount: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  payNowBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.contentPositive,
+  },
+  payNowLabel: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPositive,
+  },
+
+  // Recently viewed
+  watchlistRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  watchlistItem: {
+    width: 56,
+    alignItems: 'center',
+    gap: 8,
+  },
+  watchlistTextGroup: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  companyAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: colors.borderPrimary,
+  },
+  companyAvatarImg: {
+    width: '100%',
+    height: '100%',
+  },
+  tickerLabel: {
+    fontFamily: F.medium,
+    fontSize: 10,
+    lineHeight: 12,
+    color: colors.contentPrimary,
+    textAlign: 'center',
+  },
+  changeLabel: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+
+  // Stock cards
+  stockGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  stockCard: {
+    width: '47%',
+    backgroundColor: colors.backgroundSurface,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 16,
+    padding: 16,
+    gap: 24,
+  },
+  stockCardTop: {
+    gap: 8,
+  },
+  companyAvatarSm: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: colors.borderPrimary,
+  },
+  stockName: {
+    fontFamily: F.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  stockCardBottom: {
+    gap: 4,
+  },
+  stockPrice: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  stockChange: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
+  // See more card — thumbnails wrap (2/row at the 47% card width) above a
+  // "See more ›" link. 3 logos = single row; 4+ logos = 2×2.
+  seeMoreCard: {
+    justifyContent: 'space-between',
+  },
+  moreLogosGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  moreLogoItem: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: colors.borderPrimary,
+  },
+  seeMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  seeMoreText: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  seeMoreChevron: {
+    fontSize: 18,
+    color: colors.contentSecondary,
+    marginLeft: 4,
+    lineHeight: 20,
+  },
+
+  // Bottom nav
+  bottomNav: {
+    backgroundColor: colors.backgroundPrimary,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderPrimary,
+  },
+  bottomNavBar: {
+    height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+  },
+  navTab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  navIconWrap: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navActiveIndicator: {
+    position: 'absolute',
+    width: 19,
+    height: 19,
+    backgroundColor: colors.backgroundAccentSecondary,
+    opacity: 0.2,
+  },
+  navIcon: {
+    width: 24,
+    height: 24,
+  },
+  navLabel: {
+    fontFamily: F.medium,
+    fontSize: 10,
+    lineHeight: 12,
+    color: colors.contentPrimary,
+    textAlign: 'center',
+  },
+  navLabelActive: {
+    color: colors.contentAccentSecondary,
+  },
+  homeIndicator: {
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Top movers filter pills — outer vertical gap is owned by the title's
+  // marginBottom (12) above and the grid's marginTop (16) below.
+  moversFilters: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    gap: 6,
+  },
+  moversFilterGroup: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  // Canonical Chip — stocks-PP/src/screens/StocksExploreScreen.tsx:1387.
+  moversPill: {
+    height: 32,
+    borderRadius: 99,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  moversPillSelected: {
+    backgroundColor: colors.backgroundTertiary,
+    borderColor: colors.borderNeutral,
+    borderWidth: 1.5,
+  },
+  // Trailing-icon variant: paddingRight 12, gap 6 (canonical Chip props).
+  moversPillCap: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingRight: 12,
+  },
+  moversPillLabel: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+  },
+  moversVertDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: colors.borderPrimary,
+  },
+
+  // Products and tools
+  toolsSection: {
+    backgroundColor: colors.backgroundPrimary,
+  },
+  toolsHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingTop: 24,
+    paddingHorizontal: 16,
+    paddingBottom: 0,
+  },
+  toolsSeeMore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  toolsSeeMoreText: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentSecondary,
+  },
+  toolsSeeMoreChevron: {
+    fontSize: 16,
+    color: colors.contentSecondary,
+    lineHeight: 18,
+  },
+  toolsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  toolItem: {
+    width: 56,
+    alignItems: 'center',
+    gap: 12,
+  },
+  toolIpoBadge: {
+    position: 'absolute',
+    left: 22,
+    top: 0,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: colors.contentAccent,
+    borderWidth: 1,
+    borderColor: colors.backgroundPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // body-xsmall-heavy per v0.18 typography scale (smallest defined size).
+  toolIpoBadgeText: {
+    fontFamily: F.medium,
+    fontSize: 10,
+    color: colors.contentOnColour,
+    lineHeight: 12,
+  },
+  toolLabel: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentPrimary,
+    textAlign: 'center',
+  },
+
+  // Volume shockers
+  volumeSection: {
+    backgroundColor: colors.backgroundPrimary,
+  },
+  volumeHeader: {
+    paddingTop: 24,
+    paddingHorizontal: 16,
+    gap: 2,
+  },
+  volumeTitle: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 18,
+    lineHeight: 28,
+    color: colors.contentPrimary,
+  },
+  volumeSubtitle: {
+    fontFamily: F.regular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentSecondary,
+  },
+  volumeCardWrap: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  volumeCard: {
+    backgroundColor: colors.backgroundSurfaceZ1,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  volumeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 16,
+  },
+  volumeName: {
+    flex: 1,
+    fontFamily: F.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  volumeEnd: {
+    alignItems: 'flex-end',
+    gap: 2,
+    maxWidth: 96,
+  },
+  volumePct: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPositive,
+    textAlign: 'right',
+  },
+  volumeVol: {
+    fontFamily: F.regular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentSecondary,
+    textAlign: 'right',
+  },
+  volumeDividerWrap: {
+    paddingLeft: 72,
+  },
+  volumeDivider: {
+    height: 1,
+    backgroundColor: colors.borderPrimary,
+  },
+  volumeSeeMore: {
+    borderTopWidth: 1,
+    borderTopColor: colors.borderPrimary,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  volumeSeeMoreInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  volumeSeeMoreText: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  volumeSeeMoreChevron: {
+    fontSize: 16,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+
+  // Trading screens
+  tradingSection: {
+    backgroundColor: colors.backgroundPrimary,
+  },
+  tradingHeader: {
+    paddingTop: 24,
+    paddingHorizontal: 16,
+  },
+  tradingTitle: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 18,
+    lineHeight: 28,
+    color: colors.contentPrimary,
+  },
+  tradingBody: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  tradingGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  tradingCard: {
+    flexBasis: '48%',
+    flexGrow: 0,
+    flexShrink: 0,
+    maxWidth: '48%',
+    backgroundColor: colors.backgroundSurfaceZ1,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 16,
+    padding: 16,
+    gap: 8,
+    overflow: 'hidden',
+  },
+  tradingTag: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 6,
+    borderRadius: 4,
+  },
+  tradingTagText: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  tradingIllusWrap: {
+    width: 120,
+    height: 72,
+    backgroundColor: colors.backgroundPrimary,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  tradingLabel: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+    minHeight: 40,
+  },
+  intradayCard: {
+    backgroundColor: colors.backgroundSurfaceZ1,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 12,
+    paddingRight: 12,
+    paddingVertical: 8,
+    gap: 12,
+  },
+  intradayLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  intradayIconWrap: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  intradayLabel: {
+    flex: 1,
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  intradayChevron: {
+    fontSize: 18,
+    color: colors.contentSecondary,
+    width: 20,
+    textAlign: 'center',
+  },
+
+  // Most bought ETFs
+  etfsSection: {
+    backgroundColor: colors.backgroundPrimary,
+  },
+  etfsHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingTop: 24,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 16,
+  },
+  etfsTitle: {
+    flex: 1,
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 18,
+    lineHeight: 28,
+    color: colors.contentPrimary,
+  },
+  etfsSeeMore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  etfsSeeMoreText: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  etfsSeeMoreChevron: {
+    fontSize: 16,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  etfsBody: {
+    paddingTop: 12,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  etfsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    rowGap: 12,
+  },
+  etfStackWrap: {
+    flexBasis: '48%',
+    flexGrow: 0,
+    flexShrink: 0,
+    maxWidth: '48%',
+    alignItems: 'center',
+  },
+  etfDeckLayer: {
+    height: 8,
+    marginBottom: -2,
+    backgroundColor: colors.backgroundPrimary,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  etfCard: {
+    width: '100%',
+    backgroundColor: colors.backgroundSurfaceZ1,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  etfCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderPrimary,
+  },
+  etfCategory: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 10,
+    lineHeight: 12,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    color: colors.contentSecondary,
+  },
+  etfCategoryChevron: {
+    fontSize: 14,
+    lineHeight: 12,
+    color: colors.contentSecondary,
+  },
+  etfCardBody: {
+    padding: 16,
+    gap: 24,
+  },
+  etfTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  etfName: {
+    flex: 1,
+    fontFamily: F.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+    height: 40,
+  },
+  etfBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  etfBadgeText: {
+    fontFamily: F.medium,
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  etfDataWrap: {
+    gap: 4,
+  },
+  etfPrice: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  etfChange: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
+  // Top Intraday header
+  intradayHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginBottom: 0,
+  },
+  intradayLink: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+
+  // ETF's by Groww — NFO label + warning tag
+  growwEtfNfoLabel: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  growwEtfTag: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.backgroundWarningSubtle,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+  },
+  growwEtfTagText: {
+    fontFamily: F.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentOnWarningSubtle,
+  },
+
+  // Sectors trending today
+  sectorsSection: {
+    backgroundColor: colors.backgroundPrimary,
+  },
+  sectorsHeader: {
+    paddingTop: 24,
+    paddingHorizontal: 16,
+    gap: 2,
+  },
+  sectorsTitle: {
+    fontFamily: F.sohne,
+    fontWeight: '400',
+    fontSize: 18,
+    lineHeight: 28,
+    color: colors.contentPrimary,
+  },
+  sectorsSubtitle: {
+    fontFamily: F.regular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: colors.contentSecondary,
+  },
+  sectorsCardWrap: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  sectorsCard: {
+    backgroundColor: colors.backgroundSurfaceZ1,
+    borderWidth: 1,
+    borderColor: colors.borderPrimary,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  sectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    gap: 16,
+  },
+  sectorNameWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  sectorName: {
+    flex: 1,
+    fontFamily: F.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentPrimary,
+  },
+  sectorBarWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  sectorBar: {
+    flexDirection: 'row',
+    width: 80,
+    height: 6,
+  },
+  sectorBarHalfL: {
+    flex: 1,
+    height: '100%',
+    backgroundColor: colors.backgroundSecondary,
+    borderTopLeftRadius: 99,
+    borderBottomLeftRadius: 99,
+    alignItems: 'flex-end',
+    overflow: 'hidden',
+  },
+  sectorBarHalfR: {
+    flex: 1,
+    height: '100%',
+    backgroundColor: colors.backgroundSecondary,
+    borderTopRightRadius: 99,
+    borderBottomRightRadius: 99,
+    overflow: 'hidden',
+    marginLeft: 1,
+  },
+  sectorBarFillR: {
+    height: '100%',
+    backgroundColor: colors.backgroundNegative,
+    borderTopLeftRadius: 99,
+    borderBottomLeftRadius: 99,
+  },
+  sectorBarFillG: {
+    height: '100%',
+    backgroundColor: colors.backgroundPositive,
+    borderTopRightRadius: 99,
+    borderBottomRightRadius: 99,
+  },
+  sectorPct: {
+    width: 56,
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'right',
+  },
+  sectorsSeeMore: {
+    borderTopWidth: 1,
+    borderTopColor: colors.borderPrimary,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectorsSeeMoreInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  sectorsSeeMoreText: {
+    fontFamily: F.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+  sectorsSeeMoreChevron: {
+    fontSize: 16,
+    lineHeight: 20,
+    color: colors.contentSecondary,
+  },
+});
+
+let styles = makeStyles();
