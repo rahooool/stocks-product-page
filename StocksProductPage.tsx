@@ -2664,7 +2664,7 @@ const makeStyles = () => StyleSheet.create({
     paddingBottom: 12,
   },
   gr1Card: {
-    width: 328,
+    alignSelf: 'stretch',
     borderRadius: 16,
     paddingHorizontal: 16,
     paddingTop: 16,
