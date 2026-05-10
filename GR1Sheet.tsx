@@ -194,6 +194,7 @@ const DEFAULT_SUGGESTIONS = [
   'Why has SBI gone down 5% today?',
   'HFCL is most traded Intraday and today',
   'Break down the latest quarterly results',
+  'Top Intraday opportunities today',
 ];
 
 const DEFAULT_ANSWERS: Record<string, string> = {
@@ -203,6 +204,8 @@ const DEFAULT_ANSWERS: Record<string, string> = {
     'HFCL surged 8.2% on 4× its 30-day average volume today. The trigger: a ₹1,450 Cr fibre cable order from BSNL — the largest order in its history. With BharatNet Phase III accelerating, HFCL is a key beneficiary. Watch resistance at ₹92; a clean breakout opens up ₹105.',
   'Break down the latest quarterly results':
     'Nifty50 Q4 aggregate earnings grew 12% YoY, beating estimates by ~3%. BFSI led with 18% profit growth. IT disappointed — TCS and Infosys guided cautiously on discretionary spending. Consumer staples beat on rural volume recovery. Top beats: Maruti (+22%), M&M (+19%). Misses: Wipro and HCL Tech on margin compression.',
+  'Top Intraday opportunities today':
+    'Three high-conviction intraday setups: (1) HFCL — breakout above ₹92 on 4× volume, target ₹98 / SL ₹89. (2) IRCTC — bullish flag on the 15m chart after RBI rate-cut tailwind, watch ₹780 break for ₹810 target. (3) BHEL — short below ₹258 after failure to hold VWAP; ₹248 first target. Position-size to 0.5–1% risk; tighten stops post-12pm.',
 };
 
 const DEFAULT_FALLBACK = 'Based on current market conditions, this reflects broader sector dynamics and specific company fundamentals. Monitor key support levels and institutional activity over the next few sessions.';
@@ -430,7 +433,12 @@ function GR1BottomSheet({
 
   // Normal sheet ─────────────────────────────────────────────────────────────
   const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [720, 0] });
-  const sheetHeight = expandAnim.interpolate({ inputRange: [0, 1], outputRange: [292, 690] });
+  // Suggestions-mode height grows with the number of suggestions (each row
+  // is ~48px tall) so the input dock at the bottom isn't clipped.
+  const SUGGESTIONS_BASE = 196; // header + drag handle + input dock + home indicator
+  const SUGGESTION_ROW   = 48;
+  const suggestionsHeight = SUGGESTIONS_BASE + SUGGESTION_ROW * suggestions.length;
+  const sheetHeight = expandAnim.interpolate({ inputRange: [0, 1], outputRange: [suggestionsHeight, 690] });
 
   const isChat = mode !== 'suggestions';
   const showSuggestions = mode === 'suggestions' || mode === 'composing';
@@ -661,7 +669,7 @@ export function GR1Layer({ state }: { state: GR1State }) {
   if (!state.open) return null;
   return (
     <>
-      {(state.mode === 'thinking' || state.mode === 'answering' || state.mode === 'composing') && (
+      {(state.mode === 'suggestions' || state.mode === 'thinking' || state.mode === 'answering' || state.mode === 'composing') && (
         <TouchableOpacity
           style={styles.gr1WhiteOverlay}
           activeOpacity={1}
@@ -692,9 +700,11 @@ export function GR1Layer({ state }: { state: GR1State }) {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const makeStyles = () => {
   const isDark = getMode() === 'dark';
-  // Light: white scrims; Dark: near-black #060809 — outer page scrim @ 95% in dark, 60% in light.
+  // Page scrim behind the GR-1 sheet. Both modes use 95% so the page
+  // recedes uniformly while the sheet (suggestions / composing / etc.)
+  // sits on top.
   const scrimRgb = isDark ? '6, 8, 9' : '255, 255, 255';
-  const outerScrim = isDark ? `rgba(${scrimRgb}, 0.95)` : `rgba(${scrimRgb}, 0.6)`;
+  const outerScrim = `rgba(${scrimRgb}, 0.85)`;
   return StyleSheet.create({
   gr1WhiteOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -708,8 +718,6 @@ const makeStyles = () => {
     height: 320,
     borderRadius: 16,
     backgroundColor: colors.backgroundPrimary,
-    borderWidth: 1,
-    borderColor: colors.borderPrimary,
     overflow: 'hidden',
     flexDirection: 'column',
   },
@@ -718,7 +726,8 @@ const makeStyles = () => {
     justifyContent: 'flex-end',
   },
   gr1SheetContainer: {
-    borderRadius: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     overflow: 'hidden',
   },
   // Outset around the sheet for the mesh-gradient halo to peek out from.
@@ -734,9 +743,8 @@ const makeStyles = () => {
   gr1Sheet: {
     flex: 1,
     backgroundColor: colors.backgroundPrimary,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.borderPrimary,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
   },
   gr1UserBubbleRow: {
     flexDirection: 'row',
