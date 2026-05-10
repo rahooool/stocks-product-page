@@ -1405,24 +1405,6 @@ function GR1InsightsCard({
   const [cardDims, setCardDims]       = useState({ w: 0, h: 0 });
   const [textStarted, setTextStarted] = useState(false);
 
-  // Native gradient border: opacity-driven (web uses CSS conic gradient instead)
-  const nativeBorderAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (Platform.OS === 'web' || !textStarted) return;
-    Animated.sequence([
-      Animated.timing(nativeBorderAnim, {
-        toValue: 1, duration: 500,
-        easing: Easing.out(Easing.cubic), useNativeDriver: true,
-      }),
-      Animated.delay(4200),
-      Animated.timing(nativeBorderAnim, {
-        toValue: 0, duration: 600,
-        easing: Easing.in(Easing.ease), useNativeDriver: true,
-      }),
-    ]).start();
-  }, [textStarted]);
-
   // Inject CSS once for the Google AI-style settling border (web only)
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -1502,30 +1484,8 @@ function GR1InsightsCard({
           )
         }
 
-        {/* Native: SVG gradient border fades in on trigger, settles back to grey */}
-        {Platform.OS !== 'web' && cardDims.w > 0 && (
-          <Animated.View
-            style={[StyleSheet.absoluteFill, { borderRadius: 16, opacity: nativeBorderAnim }]}
-            pointerEvents="none"
-          >
-            <Svg width={cardDims.w} height={cardDims.h} style={StyleSheet.absoluteFill}>
-              <Defs>
-                <SvgLinearGradient id="gr1NativeBorder" gradientUnits="userSpaceOnUse"
-                  x1={0} y1={0} x2={cardDims.w} y2={cardDims.h}>
-                  <Stop offset="0"    stopColor="#A7F0DB" />
-                  <Stop offset="0.45" stopColor="#A3ADFE" />
-                  <Stop offset="1"    stopColor={colors.borderPrimary} />
-                </SvgLinearGradient>
-              </Defs>
-              <Rect
-                x={0.5} y={0.5}
-                width={cardDims.w - 1} height={cardDims.h - 1}
-                rx={15.5} ry={15.5}
-                stroke="url(#gr1NativeBorder)" strokeWidth={1} fill="none"
-              />
-            </Svg>
-          </Animated.View>
-        )}
+        {/* Native: keeps the static borderPrimary stroke set on gr1Card.
+            (Web's conic-gradient animation defined above still runs.) */}
 
         {/* Header */}
         <View style={styles.gr1Header}>

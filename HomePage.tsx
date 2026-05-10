@@ -22,21 +22,26 @@ import { GR1Icon, useGR1Sheet, GR1Layer } from './GR1Sheet';
 import { colors, fonts as F, useTheme } from './tokens';
 
 // ─── Mint DS stock logo CDN ───────────────────────────────────────────────────
+// Public Groww asset CDN — used as a fallback for tickers we haven't yet
+// bundled locally (e.g. similar-stocks, top-funds lists).
 const DSL = (ticker: string) =>
-  `https://mint-design-system.vercel.app/logos/stocks/${ticker}.png`;
+  `https://assets-netstorage.groww.in/stock-assets/logos2/${ticker}.png`;
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
+// Logos sourced via Groww MCP `curate_symbols` + Groww asset CDN at build
+// time, then bundled into assets/logos/ so they render offline of Groww's
+// network (e.g. Expo Go on a phone).
 const ASSETS = {
   profilePic:  'https://www.figma.com/api/mcp/asset/89b10bc5-99a5-4de9-a23a-eb37f48617c1',
   motilalLogo: null as string | null,
-  iciciLogo:   DSL('ICICIBANK'),
-  sbiLogo:     DSL('SBIN'),
-  hdfcLogo:    DSL('HDFCBANK'),
-  kotakLogo:   DSL('KOTAKBANK'),
-  axisLogo:    require('./assets/axisbank-logo.png') as ReturnType<typeof require>,
-  zomatoLogo:  DSL('ETERNAL'),
-  pvrLogo:     null as string | null,
-  suzlonLogo:  null as string | null,
+  iciciLogo:   require('./assets/logos/ICICIBANK.png') as ReturnType<typeof require>,
+  sbiLogo:     require('./assets/logos/SBIN.png')      as ReturnType<typeof require>,
+  hdfcLogo:    require('./assets/logos/HDFCBANK.png')  as ReturnType<typeof require>,
+  kotakLogo:   require('./assets/logos/KOTAKBANK.png') as ReturnType<typeof require>,
+  axisLogo:    require('./assets/logos/AXISBANK.png')  as ReturnType<typeof require>,
+  zomatoLogo:  require('./assets/logos/ZOMATO.png')    as ReturnType<typeof require>,
+  pvrLogo:     require('./assets/logos/PVRINOX.png')   as ReturnType<typeof require>,
+  suzlonLogo:  require('./assets/logos/SUZLON.png')    as ReturnType<typeof require>,
 };
 
 // ─── Live quote fetching ──────────────────────────────────────────────────────
