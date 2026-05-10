@@ -36,8 +36,9 @@ import {
 import Svg, { Path, Defs, LinearGradient, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 // ─── Design tokens ───────────────────────────────────────────────────────────
-import { colors, fonts as F, useTheme } from './tokens';
+import { colors, fonts as F, useTheme, getMode } from './tokens';
 import MeshBackdrop from './MeshBackdrop';
+import GR1OpenPulse from './GR1OpenPulse';
 
 // ─── GR-1 icon ────────────────────────────────────────────────────────────────
 export function GR1Icon({ size = 24 }: { size?: number }) {
@@ -85,18 +86,33 @@ export function GR1Icon({ size = 24 }: { size?: number }) {
 // Web uses boxShadow; native renders <GR1Glow /> with absolute negative insets.
 // DS deviation (approved): the ambient glow is core to the GR-1 visual language
 // and is intentionally exempt from v0.31 §3.1's flat-elevation rule.
-const GR1_GLOW_SHADOW = Platform.OS === 'web' ? ({
-  boxShadow: [
-    '-40px 10px 100px 30px rgba(192,200,255,0.30)',
-    '0px   12px  90px 20px rgba(188,234,255,0.24)',
-    '40px  10px 100px 30px rgba(156,227,208,0.30)',
-  ].join(', '),
-} as any) : {};
+//
+// Light: lavender / sky / mint. Dark: #617BFF → #5CA5C6 → #00825C.
+const GR1_GLOW_LIGHT = { L: '192,200,255', C: '188,234,255', R: '156,227,208' };
+const GR1_GLOW_DARK  = { L: '97,123,255',  C: '92,165,198',  R: '0,130,92'    };
+
+function useGr1GlowPalette() {
+  const { mode } = useTheme();
+  return mode === 'dark' ? GR1_GLOW_DARK : GR1_GLOW_LIGHT;
+}
+
+function useGr1GlowShadow() {
+  const c = useGr1GlowPalette();
+  if (Platform.OS !== 'web') return {};
+  return {
+    boxShadow: [
+      `-40px 10px 100px 30px rgba(${c.L},0.30)`,
+      `0px   12px  90px 20px rgba(${c.C},0.24)`,
+      `40px  10px 100px 30px rgba(${c.R},0.30)`,
+    ].join(', '),
+  } as any;
+}
 
 const GR1_GLOW_OUTSET = 80;
 
 function GR1Glow() {
   if (Platform.OS === 'web') return null;
+  const c = useGr1GlowPalette();
   return (
     <View
       pointerEvents="none"
@@ -111,16 +127,16 @@ function GR1Glow() {
       <Svg width="100%" height="100%">
         <Defs>
           <RadialGradient id="gr1GlowL" cx="20%" cy="55%" rx="55%" ry="55%" fx="20%" fy="55%">
-            <Stop offset="0%" stopColor="rgb(192,200,255)" stopOpacity="0.55" />
-            <Stop offset="100%" stopColor="rgb(192,200,255)" stopOpacity="0" />
+            <Stop offset="0%" stopColor={`rgb(${c.L})`} stopOpacity="0.55" />
+            <Stop offset="100%" stopColor={`rgb(${c.L})`} stopOpacity="0" />
           </RadialGradient>
           <RadialGradient id="gr1GlowC" cx="50%" cy="55%" rx="55%" ry="55%" fx="50%" fy="55%">
-            <Stop offset="0%" stopColor="rgb(188,234,255)" stopOpacity="0.45" />
-            <Stop offset="100%" stopColor="rgb(188,234,255)" stopOpacity="0" />
+            <Stop offset="0%" stopColor={`rgb(${c.C})`} stopOpacity="0.45" />
+            <Stop offset="100%" stopColor={`rgb(${c.C})`} stopOpacity="0" />
           </RadialGradient>
           <RadialGradient id="gr1GlowR" cx="80%" cy="55%" rx="55%" ry="55%" fx="80%" fy="55%">
-            <Stop offset="0%" stopColor="rgb(156,227,208)" stopOpacity="0.55" />
-            <Stop offset="100%" stopColor="rgb(156,227,208)" stopOpacity="0" />
+            <Stop offset="0%" stopColor={`rgb(${c.R})`} stopOpacity="0.55" />
+            <Stop offset="100%" stopColor={`rgb(${c.R})`} stopOpacity="0" />
           </RadialGradient>
         </Defs>
         <Rect x="0" y="0" width="100%" height="100%" fill="url(#gr1GlowL)" />
@@ -201,6 +217,7 @@ interface GR1BottomSheetProps {
   prompt: string;
   answer: string;
   suggestions: readonly string[];
+  openKey: number;
   onClose: () => void;
   onSuggestionTap: (text: string) => void;
   onToPeek: () => void;
@@ -211,11 +228,12 @@ interface GR1BottomSheetProps {
 }
 
 function GR1BottomSheet({
-  anim, expandAnim, mode, prompt, answer, suggestions,
+  anim, expandAnim, mode, prompt, answer, suggestions, openKey,
   onClose, onSuggestionTap, onToPeek, onToStart, onReExpand, onExpand, onSubmit,
 }: GR1BottomSheetProps) {
   const inputRef = useRef<TextInput>(null);
   const prevModeRef = useRef<GR1Mode>(mode);
+  const glowShadow = useGr1GlowShadow();
   useEffect(() => {
     const wasPeek = prevModeRef.current === 'peek';
     const enteredComposing = prevModeRef.current === 'suggestions' && mode === 'composing';
@@ -307,28 +325,61 @@ function GR1BottomSheet({
   const sheetDragY = useRef(new Animated.Value(0)).current;
   const sheetHandlersRef = useRef({ onToPeek, onToStart, onClose, mode });
   const resolveDrag = () => {
-    const { onToPeek: tp, onToStart: ts, onClose: cl, mode: m } = sheetHandlersRef.current;
-    if (m === 'thinking' || m === 'answering') tp();
-    else if (m === 'composing') ts();
+    const { onToStart: ts, onClose: cl, mode: m } = sheetHandlersRef.current;
+    if (m === 'composing') ts();
     else cl();
   };
+
+  // Gorhom-style spring config + velocity-aware snap.
   const sheetPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, { dy }) => Math.abs(dy) > 4,
+      // 4px hysteresis so taps still register on inner controls; once moving down,
+      // we always claim the gesture.
+      onMoveShouldSetPanResponder: (_, { dy }) => dy > 4,
+      onPanResponderGrant: () => {
+        sheetDragY.stopAnimation();
+        sheetDragY.setValue(0);
+      },
       onPanResponderMove: (_, { dy }) => {
-        if (dy > 0) sheetDragY.setValue(dy);
+        // Only follow downward drag; rubber-band slightly when dragged up.
+        if (dy >= 0) {
+          sheetDragY.setValue(dy);
+        } else {
+          sheetDragY.setValue(dy * 0.18);
+        }
       },
       onPanResponderRelease: (_, { dy, vy }) => {
-        if (dy < 5) {
-          Animated.spring(sheetDragY, { toValue: 0, useNativeDriver: true, bounciness: 0 } as any).start();
-          resolveDrag();
-        } else if (dy > 80 || vy > 0.6) {
-          sheetDragY.setValue(0);
-          resolveDrag();
+        // Combined position + velocity decision (matches gorhom snap heuristic).
+        const projectedDy = dy + vy * 120;
+        if (projectedDy > 100 || vy > 0.7) {
+          // Animate the sheet off-screen, then unmount.
+          Animated.spring(sheetDragY, {
+            toValue: 720,
+            velocity: vy * 1000,
+            useNativeDriver: true,
+            tension: 90,
+            friction: 14,
+            overshootClamping: true,
+          } as any).start(() => {
+            sheetDragY.setValue(0);
+            resolveDrag();
+          });
         } else {
-          Animated.spring(sheetDragY, { toValue: 0, useNativeDriver: true, bounciness: 6 } as any).start();
+          // Snap back home with springy feel.
+          Animated.spring(sheetDragY, {
+            toValue: 0,
+            velocity: vy * 1000,
+            useNativeDriver: true,
+            tension: 110,
+            friction: 12,
+          } as any).start();
         }
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(sheetDragY, {
+          toValue: 0, useNativeDriver: true, tension: 110, friction: 12,
+        } as any).start();
       },
     })
   ).current;
@@ -342,7 +393,7 @@ function GR1BottomSheet({
         <Animated.View style={{ position: 'absolute', left: 8, right: 8, bottom: Animated.add(new Animated.Value(80), keyboardOffset) }} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ translateY: peekDragY }] }}>
             <GR1Glow />
-            <Animated.View style={[styles.gr1PeekCard, GR1_GLOW_SHADOW, { position: 'relative', bottom: undefined, left: undefined, right: undefined }]}>
+            <Animated.View style={[styles.gr1PeekCard, glowShadow, { position: 'relative', bottom: undefined, left: undefined, right: undefined }]}>
               <View style={styles.gr1DragHandleRow} {...peekPanResponder.panHandlers}>
                 <View style={styles.gr1DragHandle} />
               </View>
@@ -394,20 +445,19 @@ function GR1BottomSheet({
   return (
     <View style={styles.gr1Overlay} pointerEvents="box-none">
       <Animated.View style={{ marginBottom: keyboardOffset }}>
-        <Animated.View style={[GR1_GLOW_SHADOW, { transform: [{ translateY: Animated.add(translateY, sheetDragY) }] }]}>
+        <Animated.View style={[glowShadow, { transform: [{ translateY: Animated.add(translateY, sheetDragY) }] }]}>
           <GR1Glow />
-          {/* Mesh peeks out past the sheet edges — see MeshBackdrop.web.tsx. */}
-          <View pointerEvents="none" style={styles.gr1MeshPeek}>
-            <MeshBackdrop />
-          </View>
           <Animated.View style={[styles.gr1SheetContainer, { height: Animated.subtract(sheetHeight, keyboardOffset) }]}>
             <View style={styles.gr1Sheet}>
-              <View style={styles.gr1DragHandleRow} {...sheetPanResponder.panHandlers}>
-                <View style={styles.gr1DragHandle} />
-              </View>
-              <View style={styles.gr1SheetHeader}>
-                <GR1Icon size={22} />
-                <Text style={styles.gr1SheetTitle}>GR-1</Text>
+              {/* Drag handle + header are part of one drag-target zone — gorhom-style. */}
+              <View {...sheetPanResponder.panHandlers}>
+                <View style={styles.gr1DragHandleRow}>
+                  <View style={styles.gr1DragHandle} />
+                </View>
+                <View style={styles.gr1SheetHeader}>
+                  <GR1Icon size={22} />
+                  <Text style={styles.gr1SheetTitle}>GR-1</Text>
+                </View>
               </View>
               {showSuggestions ? (
                 <View style={styles.gr1Suggestions}>
@@ -435,7 +485,7 @@ function GR1BottomSheet({
                 {isChat && Platform.OS === 'web' && (
                   <View style={styles.gr1Scrim} pointerEvents="none"
                     {...({ style: [styles.gr1Scrim, {
-                      background: 'linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 100%)',
+                      background: `linear-gradient(to bottom, ${getMode() === 'dark' ? 'rgba(6,8,9,0)' : 'rgba(255,255,255,0)'} 0%, ${getMode() === 'dark' ? 'rgba(6,8,9,1)' : 'rgba(255,255,255,1)'} 100%)`,
                     }] } as any)} />
                 )}
                 <View style={styles.gr1InputRow}>
@@ -486,6 +536,7 @@ export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
   const fallback = options.fallbackAnswer ?? DEFAULT_FALLBACK;
 
   const [open, setOpen] = useState(false);
+  const [openKey, setOpenKey] = useState(0);
   const [mode, setMode] = useState<GR1Mode>('suggestions');
   const [prompt, setPrompt] = useState('');
   const [answer, setAnswer] = useState('');
@@ -500,15 +551,21 @@ export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
     setAnswer('');
     expandAnim.setValue(0);
     setOpen(true);
-    Animated.timing(anim, { toValue: 1, duration: 240, useNativeDriver: true, easing: Easing.out(Easing.cubic) }).start();
+    setOpenKey(k => k + 1);
+    Animated.spring(anim, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 90,
+      friction: 14,
+    } as any).start();
   }, [anim, expandAnim]);
 
   const closeSheet = useCallback(() => {
     if (streamRef.current) { clearInterval(streamRef.current); streamRef.current = null; }
     if (thinkRef.current)  { clearTimeout(thinkRef.current);  thinkRef.current = null; }
     Animated.parallel([
-      Animated.timing(anim, { toValue: 0, duration: 260, useNativeDriver: true, easing: Easing.in(Easing.quad) }),
-      Animated.timing(expandAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
+      Animated.timing(anim, { toValue: 0, duration: 220, useNativeDriver: true, easing: Easing.in(Easing.cubic) }),
+      Animated.timing(expandAnim, { toValue: 0, duration: 200, useNativeDriver: false }),
     ]).start(() => {
       setOpen(false);
       setMode('suggestions');
@@ -562,7 +619,7 @@ export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
   }, [expandAnim, answers, fallback]);
 
   return {
-    open, mode, prompt, answer, suggestions, anim, expandAnim,
+    open, openKey, mode, prompt, answer, suggestions, anim, expandAnim,
     openSheet, closeSheet,
     toPeek, toStart, reExpandFromPeek, onExpand, onSuggestionTap,
   };
@@ -577,8 +634,12 @@ export function GR1Layer({ state }: { state: GR1State }) {
   if (!state.open) return null;
   return (
     <>
-      {(state.mode === 'thinking' || state.mode === 'answering') && (
-        <View style={styles.gr1WhiteOverlay} onStartShouldSetResponder={() => true} />
+      {(state.mode === 'thinking' || state.mode === 'answering' || state.mode === 'composing') && (
+        <TouchableOpacity
+          style={styles.gr1WhiteOverlay}
+          activeOpacity={1}
+          onPress={state.closeSheet}
+        />
       )}
       <GR1BottomSheet
         anim={state.anim}
@@ -587,6 +648,7 @@ export function GR1Layer({ state }: { state: GR1State }) {
         prompt={state.prompt}
         answer={state.answer}
         suggestions={state.suggestions}
+        openKey={state.openKey}
         onClose={state.closeSheet}
         onSuggestionTap={state.onSuggestionTap}
         onToPeek={state.toPeek}
@@ -600,10 +662,15 @@ export function GR1Layer({ state }: { state: GR1State }) {
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const makeStyles = () => StyleSheet.create({
+const makeStyles = () => {
+  const isDark = getMode() === 'dark';
+  // Light: white scrims; Dark: near-black #060809 — outer page scrim @ 95% in dark, 60% in light.
+  const scrimRgb = isDark ? '6, 8, 9' : '255, 255, 255';
+  const outerScrim = isDark ? `rgba(${scrimRgb}, 0.95)` : `rgba(${scrimRgb}, 0.6)`;
+  return StyleSheet.create({
   gr1WhiteOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: outerScrim,
   },
   gr1PeekCard: {
     position: 'absolute',
@@ -792,5 +859,6 @@ const makeStyles = () => StyleSheet.create({
     backgroundColor: colors.contentSecondary,
   },
 });
+};
 
 let styles = makeStyles();

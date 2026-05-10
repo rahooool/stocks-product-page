@@ -29,6 +29,16 @@
     },
     "plugins": [
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a1e35fef-4542-4799-970e-aea2219969b4"
+      }
+    },
+    "owner": "sukanyab",
+    "runtimeVersion": "exposdk:54.0.0",
+    "updates": {
+      "url": "https://u.expo.dev/a1e35fef-4542-4799-970e-aea2219969b4"
+    }
   }
 }

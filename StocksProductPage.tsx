@@ -1448,6 +1448,7 @@ function GR1InsightsCard({ scrollY, insights }: { scrollY: Animated.Value; insig
     document.head.appendChild(el);
   }, []);
 
+
   // Scroll trigger: kick off text reveal + border settle
   useEffect(() => {
     const id = scrollY.addListener(({ value }) => {
@@ -1538,14 +1539,11 @@ function GR1InsightsCard({ scrollY, insights }: { scrollY: Animated.Value; insig
                   delay={i * 30}
                   style={styles.gr1InsightText}
                 />
-                <TouchableOpacity style={styles.gr1FlagBtn} accessibilityLabel="Flag">
-                  <HugeiconsIcon icon={Flag02Icon} size={16} color={colors.contentTertiary} strokeWidth={1.5} />
-                </TouchableOpacity>
               </View>
             ))}
 
             <TouchableOpacity style={styles.gr1AskMoreBtn} activeOpacity={0.7}>
-              <Image source={require('./assets/mds_ic_gr1.png')} style={styles.gr1AskMoreIcon} />
+              <GR1Icon size={16} />
               <Text style={styles.gr1AskMoreText}>Ask more</Text>
             </TouchableOpacity>
           </>
@@ -1859,7 +1857,7 @@ function BottomDock() {
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
-const TABS = ['Overview', 'Technicals', 'F&O', 'News'];
+const TABS = ['Overview', 'Technicals', 'News', 'Events'];
 const FILTER_PILLS = ['Quarterly', 'Yearly'];
 
 // Font family aliases now come from ./tokens (imported as F at top of file).
@@ -2666,14 +2664,16 @@ const makeStyles = () => StyleSheet.create({
     paddingBottom: 12,
   },
   gr1Card: {
+    width: 328,
     borderRadius: 16,
     paddingHorizontal: 16,
     paddingTop: 16,
-    paddingBottom: 4,
+    paddingBottom: 16,
     backgroundColor: colors.backgroundPrimary,
     // Border is provided by the CSS overlay on web; keep native border for iOS/Android
     borderWidth: Platform.OS === 'web' ? 0 : 1,
     borderColor: colors.borderPrimary,
+    overflow: 'hidden',
   },
   gr1Header: {
     flexDirection: 'row',
@@ -2743,7 +2743,7 @@ const makeStyles = () => StyleSheet.create({
     borderColor: colors.borderPrimary,
     borderRadius: 8,
     marginTop: 12,
-    marginBottom: 16,
+    marginBottom: 0,
   },
   gr1AskMoreIcon: {
     width: 16,
