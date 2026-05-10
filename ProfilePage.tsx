@@ -190,7 +190,7 @@ export default function ProfilePage({ onBack }: { onBack: () => void }) {
         <Image source={{ uri: ASSETS.profilePic }} style={styles.avatar} />
         <View style={styles.nameWrap}>
           <Text style={styles.name}>Sukanya</Text>
-          <Text style={styles.email}>sukanya@example.com</Text>
+          <Text style={styles.email}>sukanyab@groww.in</Text>
         </View>
       </View>
 

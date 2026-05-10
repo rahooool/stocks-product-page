@@ -51,7 +51,7 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 // ─── Design tokens ───────────────────────────────────────────────────────────
 // Source of truth: ./tokens.ts (mirrors docs/mint-ds-groww-invest-v0.18.md).
-import { colors, fonts as F, useTheme } from './tokens';
+import { colors, fonts as F, useTheme, getMode } from './tokens';
 
 const TIME_PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'All'];
 
@@ -499,8 +499,13 @@ function StockHeroSection({
     <View style={styles.heroSection}>
       {/* Stock info block */}
       <View style={styles.heroStockInfo}>
-        {/* Company logo (32×32, slightly rounded square) */}
-        <Image source={STOCK_LOGOS[stock.ticker]} style={styles.companyLogo} />
+        {/* Company logo (32×32, slightly rounded square)
+            Bundled logo if we have one; otherwise fall back to the Groww
+            asset CDN by ticker for synthesized cards (ABB, Hero MotoCorp, …). */}
+        <Image
+          source={STOCK_LOGOS[stock.ticker] ?? { uri: DSL_LOGO(stock.ticker) }}
+          style={styles.companyLogo}
+        />
 
         {/* Ticker · Exchange + name (grouped per Figma 6248:38771) */}
         <View style={styles.heroNameBlock}>
@@ -1484,8 +1489,42 @@ function GR1InsightsCard({
           )
         }
 
-        {/* Native: keeps the static borderPrimary stroke set on gr1Card.
-            (Web's conic-gradient animation defined above still runs.) */}
+        {/* Native: persistent SVG gradient stroke (no fade) — gr1Card sets
+            borderWidth:0 on native so this is the only edge.
+            Web's conic-gradient animation defined above still runs. */}
+        {Platform.OS !== 'web' && cardDims.w > 0 && (
+          <View
+            style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+            pointerEvents="none"
+          >
+            <Svg width={cardDims.w} height={cardDims.h} style={StyleSheet.absoluteFill}>
+              <Defs>
+                <SvgLinearGradient id="gr1NativeBorder" gradientUnits="userSpaceOnUse"
+                  x1={0} y1={0} x2={cardDims.w} y2={cardDims.h}>
+                  {(getMode() === 'dark'
+                    ? [
+                        { offset: '0', color: '#617BFF' },
+                        { offset: '1', color: '#4DC2A2' },
+                      ]
+                    : [
+                        { offset: '0',   color: '#A7F0DB' },
+                        { offset: '0.5', color: '#A3ADFE' },
+                        { offset: '1',   color: '#E6E9F8' },
+                      ]
+                  ).map((s) => (
+                    <Stop key={s.offset} offset={s.offset} stopColor={s.color} />
+                  ))}
+                </SvgLinearGradient>
+              </Defs>
+              <Rect
+                x={0.5} y={0.5}
+                width={cardDims.w - 1} height={cardDims.h - 1}
+                rx={15.5} ry={15.5}
+                stroke="url(#gr1NativeBorder)" strokeWidth={1} fill="none"
+              />
+            </Svg>
+          </View>
+        )}
 
         {/* Header */}
         <View style={styles.gr1Header}>
@@ -2678,10 +2717,10 @@ const makeStyles = () => StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 16,
-    backgroundColor: colors.backgroundPrimary,
-    // Border is provided by the CSS overlay on web; keep native border for iOS/Android
-    borderWidth: Platform.OS === 'web' ? 0 : 1,
-    borderColor: colors.borderPrimary,
+    backgroundColor: colors.backgroundSurfaceZ1,
+    // Border comes from the CSS overlay on web and the SVG gradient stroke
+    // on native — no solid borderWidth on either, to avoid double-stroke.
+    borderWidth: 0,
     overflow: 'hidden',
   },
   gr1Header: {
@@ -2748,8 +2787,9 @@ const makeStyles = () => StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     height: 32,
+    backgroundColor: colors.backgroundPrimary,
     borderWidth: 1,
-    borderColor: colors.borderPrimary,
+    borderColor: colors.borderPrimaryOnSurfaceZ1,
     borderRadius: 8,
     marginTop: 12,
     marginBottom: 0,
