@@ -217,6 +217,7 @@ interface GR1BottomSheetProps {
   prompt: string;
   answer: string;
   suggestions: readonly string[];
+  title: string;
   openKey: number;
   onClose: () => void;
   onSuggestionTap: (text: string) => void;
@@ -228,7 +229,7 @@ interface GR1BottomSheetProps {
 }
 
 function GR1BottomSheet({
-  anim, expandAnim, mode, prompt, answer, suggestions, openKey,
+  anim, expandAnim, mode, prompt, answer, suggestions, title, openKey,
   onClose, onSuggestionTap, onToPeek, onToStart, onReExpand, onExpand, onSubmit,
 }: GR1BottomSheetProps) {
   const inputRef = useRef<TextInput>(null);
@@ -399,7 +400,7 @@ function GR1BottomSheet({
               </View>
               <View style={styles.gr1SheetHeader}>
                 <GR1Icon size={18} />
-                <Text style={styles.gr1SheetTitle}>GR-1</Text>
+                <Text style={styles.gr1SheetTitle}>{title}</Text>
               </View>
               <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 12 }} showsVerticalScrollIndicator={false}>
                 <View style={styles.gr1UserBubbleRow}>
@@ -456,7 +457,7 @@ function GR1BottomSheet({
                 </View>
                 <View style={styles.gr1SheetHeader}>
                   <GR1Icon size={22} />
-                  <Text style={styles.gr1SheetTitle}>GR-1</Text>
+                  <Text style={styles.gr1SheetTitle}>{title}</Text>
                 </View>
               </View>
               {showSuggestions ? (
@@ -530,8 +531,15 @@ export interface UseGR1SheetOptions {
   fallbackAnswer?: string;
 }
 
+export interface OpenSheetOptions {
+  mode?: 'suggestions' | 'composing';
+  submit?: string;
+  suggestions?: readonly string[];
+  title?: string;
+}
+
 export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
-  const suggestions = options.suggestions ?? DEFAULT_SUGGESTIONS;
+  const defaultSuggestions = options.suggestions ?? DEFAULT_SUGGESTIONS;
   const answers = options.answers ?? DEFAULT_ANSWERS;
   const fallback = options.fallbackAnswer ?? DEFAULT_FALLBACK;
 
@@ -540,16 +548,53 @@ export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
   const [mode, setMode] = useState<GR1Mode>('suggestions');
   const [prompt, setPrompt] = useState('');
   const [answer, setAnswer] = useState('');
+  const [suggestions, setSuggestions] = useState<readonly string[]>(defaultSuggestions);
+  const [title, setTitle] = useState<string>('GR-1');
   const anim = useRef(new Animated.Value(0)).current;
   const expandAnim = useRef(new Animated.Value(0)).current;
   const streamRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const thinkRef  = useRef<ReturnType<typeof setTimeout>  | null>(null);
 
-  const openSheet = useCallback(() => {
+  const onExpand = useCallback(() => {
+    setMode('composing');
+    Animated.timing(expandAnim, {
+      toValue: 1, duration: 340, useNativeDriver: false, easing: Easing.out(Easing.cubic),
+    }).start();
+  }, [expandAnim]);
+
+  const onSuggestionTap = useCallback((text: string) => {
+    if (streamRef.current) { clearInterval(streamRef.current); streamRef.current = null; }
+    setPrompt(text);
+    setAnswer('');
+    setMode('thinking');
+    Animated.timing(expandAnim, {
+      toValue: 1, duration: 340, useNativeDriver: false, easing: Easing.out(Easing.cubic),
+    }).start();
+    thinkRef.current = setTimeout(() => {
+      setMode('answering');
+      const full = answers[text] ?? fallback;
+      const words = full.split(' ');
+      let i = 0;
+      streamRef.current = setInterval(() => {
+        i++;
+        setAnswer(words.slice(0, i).join(' '));
+        if (i >= words.length) { clearInterval(streamRef.current!); streamRef.current = null; }
+      }, 75);
+    }, 1800);
+  }, [expandAnim, answers, fallback]);
+
+  const openSheet = useCallback((opts?: OpenSheetOptions | unknown) => {
+    // Guard against being passed a press event by accident.
+    const o: OpenSheetOptions =
+      (opts && typeof opts === 'object' && !('nativeEvent' in (opts as any)))
+        ? (opts as OpenSheetOptions)
+        : {};
     setMode('suggestions');
     setPrompt('');
     setAnswer('');
     expandAnim.setValue(0);
+    setSuggestions(o.suggestions ?? defaultSuggestions);
+    setTitle(o.title ?? 'GR-1');
     setOpen(true);
     setOpenKey(k => k + 1);
     Animated.spring(anim, {
@@ -558,7 +603,17 @@ export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
       tension: 90,
       friction: 14,
     } as any).start();
-  }, [anim, expandAnim]);
+
+    // Defer follow-up state changes to the next tick so the bottom-sheet
+    // mounts in 'suggestions' first; this lets the composing-focus effect
+    // detect the transition and bring up the keyboard.
+    if (o.submit) {
+      const text = o.submit;
+      setTimeout(() => onSuggestionTap(text), 0);
+    } else if (o.mode === 'composing') {
+      setTimeout(() => onExpand(), 0);
+    }
+  }, [anim, expandAnim, defaultSuggestions, onExpand, onSuggestionTap]);
 
   const closeSheet = useCallback(() => {
     if (streamRef.current) { clearInterval(streamRef.current); streamRef.current = null; }
@@ -590,36 +645,8 @@ export function useGR1Sheet(options: UseGR1SheetOptions = {}) {
     setMode(answer ? 'answering' : 'thinking');
   }, [answer]);
 
-  const onExpand = useCallback(() => {
-    setMode('composing');
-    Animated.timing(expandAnim, {
-      toValue: 1, duration: 340, useNativeDriver: false, easing: Easing.out(Easing.cubic),
-    }).start();
-  }, [expandAnim]);
-
-  const onSuggestionTap = useCallback((text: string) => {
-    if (streamRef.current) { clearInterval(streamRef.current); streamRef.current = null; }
-    setPrompt(text);
-    setAnswer('');
-    setMode('thinking');
-    Animated.timing(expandAnim, {
-      toValue: 1, duration: 340, useNativeDriver: false, easing: Easing.out(Easing.cubic),
-    }).start();
-    thinkRef.current = setTimeout(() => {
-      setMode('answering');
-      const full = answers[text] ?? fallback;
-      const words = full.split(' ');
-      let i = 0;
-      streamRef.current = setInterval(() => {
-        i++;
-        setAnswer(words.slice(0, i).join(' '));
-        if (i >= words.length) { clearInterval(streamRef.current!); streamRef.current = null; }
-      }, 75);
-    }, 1800);
-  }, [expandAnim, answers, fallback]);
-
   return {
-    open, openKey, mode, prompt, answer, suggestions, anim, expandAnim,
+    open, openKey, mode, prompt, answer, suggestions, title, anim, expandAnim,
     openSheet, closeSheet,
     toPeek, toStart, reExpandFromPeek, onExpand, onSuggestionTap,
   };
@@ -648,6 +675,7 @@ export function GR1Layer({ state }: { state: GR1State }) {
         prompt={state.prompt}
         answer={state.answer}
         suggestions={state.suggestions}
+        title={state.title}
         openKey={state.openKey}
         onClose={state.closeSheet}
         onSuggestionTap={state.onSuggestionTap}

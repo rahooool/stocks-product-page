@@ -500,7 +500,7 @@ function StockHeroSection({
       {/* Stock info block */}
       <View style={styles.heroStockInfo}>
         {/* Company logo (32×32, slightly rounded square) */}
-        <Image source={{ uri: stock.logoUri }} style={styles.companyLogo} />
+        <Image source={STOCK_LOGOS[stock.ticker]} style={styles.companyLogo} />
 
         {/* Ticker · Exchange + name (grouped per Figma 6248:38771) */}
         <View style={styles.heroNameBlock}>
@@ -1380,7 +1380,24 @@ function FundamentalsWidget() {
 }
 
 // ─── GR-1 Insights ────────────────────────────────────────────────────────────
-function GR1InsightsCard({ scrollY, insights }: { scrollY: Animated.Value; insights: string[] }) {
+const GR1_COLD_START_SUGGESTIONS = [
+  "What's happening with this stock?",
+  'Highlight strengths and weaknesses',
+  'Break down the latest quarterly results',
+  'How does this compare with peers?',
+] as const;
+
+function GR1InsightsCard({
+  scrollY,
+  insights,
+  onInsightPress,
+  onAskMore,
+}: {
+  scrollY: Animated.Value;
+  insights: string[];
+  onInsightPress: (text: string) => void;
+  onAskMore: () => void;
+}) {
   const [expanded, setExpanded] = useState(true);
 
   const hasAnimated = useRef(false);
@@ -1529,7 +1546,12 @@ function GR1InsightsCard({ scrollY, insights }: { scrollY: Animated.Value; insig
         {expanded && (
           <>
             {insights.map((insight, i) => (
-              <View key={i} style={styles.gr1InsightRow}>
+              <TouchableOpacity
+                key={i}
+                style={styles.gr1InsightRow}
+                activeOpacity={0.7}
+                onPress={() => onInsightPress(insight)}
+              >
                 <View style={styles.gr1ArrowBox}>
                   <HugeiconsIcon icon={ArrowTurnForwardIcon} size={16} color={colors.contentPrimary} strokeWidth={1.5} />
                 </View>
@@ -1539,10 +1561,10 @@ function GR1InsightsCard({ scrollY, insights }: { scrollY: Animated.Value; insig
                   delay={i * 30}
                   style={styles.gr1InsightText}
                 />
-              </View>
+              </TouchableOpacity>
             ))}
 
-            <TouchableOpacity style={styles.gr1AskMoreBtn} activeOpacity={0.7}>
+            <TouchableOpacity style={styles.gr1AskMoreBtn} activeOpacity={0.7} onPress={onAskMore}>
               <GR1Icon size={16} />
               <Text style={styles.gr1AskMoreText}>Ask more</Text>
             </TouchableOpacity>
@@ -1686,9 +1708,27 @@ function ShareholderPatternWidget() {
   );
 }
 
-// ─── Similar stocks / Top mutual fund invested helpers ──────────────────────
+// ─── Bundled stock logos ─────────────────────────────────────────────────────
+// Logos are bundled locally so they render on a phone outside Groww's network.
+// Pulled at build time via Groww MCP `curate_symbols` (canonical resolution)
+// + Groww asset CDN (assets-netstorage.groww.in/stock-assets/logos2/<sym>.png).
+// To refresh or add a stock, add its PNG to assets/logos/<TICKER>.png and a
+// matching entry below.
+const STOCK_LOGOS: Record<string, ReturnType<typeof require>> = {
+  ZOMATO:    require('./assets/logos/ZOMATO.png'),
+  PVRINOX:   require('./assets/logos/PVRINOX.png'),
+  SUZLON:    require('./assets/logos/SUZLON.png'),
+  ICICIBANK: require('./assets/logos/ICICIBANK.png'),
+  SBIN:      require('./assets/logos/SBIN.png'),
+  HDFCBANK:  require('./assets/logos/HDFCBANK.png'),
+  KOTAKBANK: require('./assets/logos/KOTAKBANK.png'),
+  AXISBANK:  require('./assets/logos/AXISBANK.png'),
+};
+
+// Lists that still pass URI strings (similar-stocks, top-funds) keep using
+// a remote URL — replace with bundled logos as those tickers are added above.
 const DSL_LOGO = (ticker: string) =>
-  `https://mint-design-system.vercel.app/logos/stocks/${ticker}.png`;
+  `https://assets-netstorage.groww.in/stock-assets/logos2/${ticker}.png`;
 
 function ListItemAvatar({ uri, fallback }: { uri?: string; fallback: string }) {
   const [failed, setFailed] = useState(false);
@@ -1915,7 +1955,16 @@ export default function StocksProductPage({
 
         {/* index 2+: Tab content */}
         {/* GR-1 Insights */}
-        <GR1InsightsCard scrollY={scrollY} insights={stock.insights} />
+        <GR1InsightsCard
+          scrollY={scrollY}
+          insights={stock.insights}
+          onInsightPress={(text) => gr1.openSheet({ submit: text })}
+          onAskMore={() => gr1.openSheet({
+            mode: 'composing',
+            title: `Ask about ${stock.shortName}`,
+            suggestions: GR1_COLD_START_SUGGESTIONS,
+          })}
+        />
 
         {/* Market Depth */}
         <MarketDepthWidget stock={stock} />
