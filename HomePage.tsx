@@ -17,6 +17,7 @@ import { HugeiconsIcon } from '@hugeicons/react-native';
 import { Search01Icon } from '@hugeicons/core-free-icons';
 import { StockConfig, STOCK_CONFIGS } from './stocks';
 import { GR1Icon, useGR1Sheet, GR1Layer } from './GR1Sheet';
+import { BurstOverlay, BurstOrigin, BurstCardData } from './BurstOverlay';
 
 // ─── Design tokens ───────────────────────────────────────────────────────────
 import { colors, fonts as F, useTheme } from './tokens';
@@ -323,10 +324,11 @@ function configForCard(item: { name: string; ticker: string; logo: any; config: 
   };
 }
 
-function StockCard({ item, quote, onPress }: {
+function StockCard({ item, quote, onPress, onLongPressBurst }: {
   item: (typeof MOST_TRADED)[0];
   quote?: Quote;
   onPress: (cfg: StockConfig) => void;
+  onLongPressBurst?: (origin: BurstOrigin, card: BurstCardData) => void;
 }) {
   const price  = quote
     ? `₹${quote.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -336,8 +338,26 @@ function StockCard({ item, quote, onPress }: {
     ? `${quote.change >= 0 ? '+' : ''}₹${Math.abs(quote.change).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${Math.abs(quote.changePct).toFixed(2)}%)`
     : item.change;
 
+  const ref = useRef<any>(null);
+  const handleLongPress = () => {
+    if (!onLongPressBurst) return;
+    ref.current?.measureInWindow((x: number, y: number, width: number, height: number) => {
+      onLongPressBurst(
+        { x, y, width, height },
+        { name: item.name, ticker: item.ticker, price, change, positive: pos, logo: item.logo },
+      );
+    });
+  };
+
   return (
-    <TouchableOpacity style={styles.stockCard} onPress={() => onPress(configForCard(item))} activeOpacity={0.85}>
+    <TouchableOpacity
+      ref={ref}
+      style={styles.stockCard}
+      onPress={() => onPress(configForCard(item))}
+      onLongPress={handleLongPress}
+      delayLongPress={350}
+      activeOpacity={0.85}
+    >
       <View style={styles.stockCardTop}>
         <View style={styles.companyAvatarSm}>
           <StockLogo logo={item.logo} ticker={item.ticker} size={32} />
@@ -372,13 +392,27 @@ function SeeMoreCard() {
   );
 }
 
-function MostTradedSection({ onStockPress, quotes }: { onStockPress: (cfg: StockConfig) => void; quotes: Record<string, Quote> }) {
+function MostTradedSection({
+  onStockPress,
+  quotes,
+  onLongPressBurst,
+}: {
+  onStockPress: (cfg: StockConfig) => void;
+  quotes: Record<string, Quote>;
+  onLongPressBurst: (origin: BurstOrigin, card: BurstCardData) => void;
+}) {
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Most traded on Groww</Text>
       <View style={styles.stockGrid}>
         {MOST_TRADED.map((item) => (
-          <StockCard key={item.name} item={item} quote={quotes[item.config.symbol]} onPress={onStockPress} />
+          <StockCard
+            key={item.name}
+            item={item}
+            quote={quotes[item.config.symbol]}
+            onPress={onStockPress}
+            onLongPressBurst={onLongPressBurst}
+          />
         ))}
         <SeeMoreCard />
       </View>
@@ -1056,6 +1090,7 @@ export default function HomePage({ onNavigateToStocks, onNavigateToProfile }: { 
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const baseRef = useRef<Record<string, Quote>>({});
   const gr1 = useGR1Sheet();
+  const [burst, setBurst] = useState<{ origin: BurstOrigin; card: BurstCardData } | null>(null);
 
   // Collapse the index strip ("ticker") on scroll so the tabs bar
   // sticks just under the search bar.
@@ -1126,6 +1161,7 @@ export default function HomePage({ onNavigateToStocks, onNavigateToProfile }: { 
   };
 
   return (
+    <View style={{ flex: 1, backgroundColor: colors.backgroundPrimary }}>
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle={mode === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.backgroundPrimary} />
 
@@ -1218,7 +1254,11 @@ export default function HomePage({ onNavigateToStocks, onNavigateToProfile }: { 
         <RecentlyViewedSection onStockPress={onNavigateToStocks} quotes={quotes} />
 
         {/* Most traded */}
-        <MostTradedSection onStockPress={onNavigateToStocks} quotes={quotes} />
+        <MostTradedSection
+          onStockPress={onNavigateToStocks}
+          quotes={quotes}
+          onLongPressBurst={(origin, card) => setBurst({ origin, card })}
+        />
 
         {/* Products and tools */}
         <ProductsAndToolsSection />
@@ -1257,6 +1297,13 @@ export default function HomePage({ onNavigateToStocks, onNavigateToProfile }: { 
 
       <GR1Layer state={gr1} />
     </SafeAreaView>
+    <BurstOverlay
+      visible={!!burst}
+      origin={burst?.origin ?? null}
+      card={burst?.card ?? null}
+      onDismiss={() => setBurst(null)}
+    />
+    </View>
   );
 }
 
